@@ -89,6 +89,18 @@ def main():
         if r.get("purchase_invoice"):
             sh_by_pi[r["purchase_invoice"]].append(r)
 
+    # أسعار الصرف الشاذة تُحسب أولاً لأن فحوصاً أخرى (تكلفة الشحن) يجب أن
+    # تتجاهل/تحذر عند الاعتماد على تحويل عملة غير موثوق.
+    pi_rates = [r.get("conversion_rate") for r in pi if r.get("conversion_rate")]
+    pi_fx_bounds = mad_bounds(pi_rates, FX_RATE_MAD_K)
+    bad_pi_fx = {r["name"] for r in pi if pi_fx_bounds and r.get("conversion_rate")
+                 and not (pi_fx_bounds[0] <= r["conversion_rate"] <= pi_fx_bounds[1])}
+
+    sh_rates = [r.get("exchange_rate") for r in sh if r.get("exchange_rate")]
+    sh_fx_bounds = mad_bounds(sh_rates, FX_RATE_MAD_K)
+    bad_sh_fx = {r["name"] for r in sh if sh_fx_bounds and r.get("exchange_rate")
+                 and not (sh_fx_bounds[0] <= r["exchange_rate"] <= sh_fx_bounds[1])}
+
     flags = Flags()
     flagged_docs_by_agent = defaultdict(set)   # agent -> set(so_name) flagged
     total_docs_by_agent = Counter()
@@ -152,30 +164,40 @@ def main():
                     f"status=Completed، تاريخ الطلب {r.get('transaction_date')}")
 
     # === فحص 4: تكلفة الشحن أعلى من نسبة معقولة من قيمة الطلب ================
+    # company_currency_total_cost = total_cost(USD) * exchange_rate، فهي بنفس
+    # عملة الطلب (LYD) فعلاً — لكن هذا التحويل غير موثوق إن كان exchange_rate
+    # نفسه شاذاً (انظر فحص أسعار الصرف)، فنستبعد تلك الحالات من هذا الفحص
+    # ونتركها لفحص "سعر صرف شاذ" وحده حتى لا تُحسب نسبة مضلِّلة.
     for s in sh:
+        if s["name"] in bad_sh_fx:
+            continue
         so_name = s.get("sales_order")
         r = so_by_name.get(so_name)
         if not r or not r.get("base_grand_total"):
             continue
-        cost = s.get("company_currency_total_cost") or 0
+        cost = s.get("company_currency_total_cost") or 0  # LYD، نفس عملة base_grand_total
         ratio = cost / r["base_grand_total"] * 100
         if ratio > SHIPPING_COST_PCT:
             sev = "عالية" if ratio > 70 else "متوسطة"
             flag_so(r, "تكلفة الشحن مرتفعة نسبة لقيمة الطلب", sev,
                     f"فاتورة الشحن {s['name']}: تكلفة {cost:,.2f} LYD = {ratio:.0f}% من قيمة الطلب {r['base_grand_total']:,.2f} LYD")
 
-    # === فحص 5: تسلسل تواريخ غير منطقي (شحن قبل الشراء / شراء قبل البيع) ====
+    # === فحص 5: تسلسل تواريخ غير منطقي ======================================
+    # تاريخ "وصول" الشحنة الفعلي هو arrival_date، وليس posting_date (تاريخ
+    # قيد فاتورة الشحن إدارياً) — الاثنان مختلفان فعلياً بفارق أيام قد يصل
+    # لأسابيع بسبب مدة الشحن، وهذا طبيعي. غير المنطقي هو أن "تصل" الشحنة
+    # قبل أن "نشتريها" أصلاً (arrival_date قبل تاريخ فاتورة الشراء).
     for s in sh:
         pi_r = pi_by_name.get(s.get("purchase_invoice"))
         so_r = so_by_name.get(s.get("sales_order"))
-        s_date = parse_date(s.get("posting_date"))
-        if pi_r and s_date and so_r:
+        arrival = parse_date(s.get("arrival_date"))
+        if pi_r and arrival and so_r:
             pi_date = parse_date(pi_r.get("posting_date"))
-            if pi_date and s_date < pi_date:
+            if pi_date and arrival < pi_date:
                 flag_so(so_r,
-                        "تسلسل تواريخ غير منطقي: فاتورة الشحن قبل فاتورة الشراء", "عالية",
-                        f"فاتورة الشحن {s['name']} بتاريخ {s.get('posting_date')} قبل فاتورة الشراء "
-                        f"{pi_r['name']} بتاريخ {pi_r.get('posting_date')}")
+                        "تسلسل تواريخ غير منطقي: وصول الشحنة قبل تاريخ فاتورة الشراء", "عالية",
+                        f"فاتورة الشحن {s['name']} وصلت بتاريخ {s.get('arrival_date')} قبل فاتورة الشراء "
+                        f"{pi_r['name']} المؤرَّخة {pi_r.get('posting_date')}")
         if so_r:
             so_date = parse_date(so_r.get("transaction_date"))
             if pi_r and so_date:
@@ -186,8 +208,6 @@ def main():
                             f"تاريخ الطلب {so_r.get('transaction_date')}")
 
     # === فحص 6: اختلاف العملة / سعر الصرف ===================================
-    rates = [r.get("conversion_rate") for r in pi if r.get("conversion_rate")]
-    bounds = mad_bounds(rates, FX_RATE_MAD_K)
     for r in pi:
         cr = r.get("conversion_rate")
         if cr == 1.0:
@@ -195,12 +215,19 @@ def main():
             if so_r:
                 flag_so(so_r, "فاتورة شراء بدولار بسعر صرف = 1 (لم يُحدَّث)", "متوسطة",
                         f"{r['name']}: conversion_rate=1.0 مع عملة {r.get('currency')}")
-        elif bounds and not (bounds[0] <= cr <= bounds[1]):
+        elif r["name"] in bad_pi_fx:
             so_r = so_by_name.get(r.get("sales_order"))
             if so_r:
                 flag_so(so_r, "سعر صرف شاذ في فاتورة الشراء (وسيط±3MAD)", "عالية",
-                        f"{r['name']}: rate={cr} خارج المدى الطبيعي [{bounds[0]:.2f}, {bounds[1]:.2f}] "
-                        f"(الوسيط {bounds[2]:.2f})")
+                        f"{r['name']}: rate={cr} خارج المدى الطبيعي [{pi_fx_bounds[0]:.2f}, {pi_fx_bounds[1]:.2f}] "
+                        f"(الوسيط {pi_fx_bounds[2]:.2f})")
+    for s in sh:
+        if s["name"] in bad_sh_fx:
+            so_r = so_by_name.get(s.get("sales_order"))
+            if so_r:
+                flag_so(so_r, "سعر صرف شاذ في فاتورة الشحن (وسيط±3MAD)", "عالية",
+                        f"{s['name']}: exchange_rate={s.get('exchange_rate')} خارج المدى الطبيعي "
+                        f"[{sh_fx_bounds[0]:.2f}, {sh_fx_bounds[1]:.2f}] (الوسيط {sh_fx_bounds[2]:.2f})")
     for r in so:
         if r.get("currency") != "LYD":
             flag_so(r, "عملة طلب البيع ليست عملة الشركة (LYD)", "منخفضة", f"currency={r.get('currency')}")
