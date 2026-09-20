@@ -104,6 +104,8 @@ def fetch_all(doctype, filters=None, page=500, full=False):
         for i, r in enumerate(rows):
             rows[i] = api(f"/api/resource/{q(doctype)}/{q(r['name'])}")["data"]
             print(f"  full documents: {i + 1}/{len(rows)}", end="\r", file=sys.stderr)
+            if (i + 1) % 1000 == 0:  # checkpoint so a crash mid-run doesn't lose hours of progress
+                save(doctype, rows)
         print(file=sys.stderr)
     return rows
 
