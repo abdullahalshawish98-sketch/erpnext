@@ -67,36 +67,44 @@ class Flags:
 
 
 def main():
-    so = load("Sales_Order")
-    pi = load("Purchase_Invoice")
-    sh = load("Shipments")
+    so_all = load("Sales_Order")
+    pi_all = load("Purchase_Invoice")
+    sh_all = load("Shipments")
+
+    # نتجاهل الطلبات/الفواتير/الشحنات الملغاة أو المسوَّدة تماماً من كل التحليل
+    # (لا تُفحص، ولا تُدخَل في حسابات الوسيط/MAD المرجعية) — وليس فقط من التعليم.
+    so = [r for r in so_all if r.get("docstatus") == 1]
+    pi = [r for r in pi_all if r.get("docstatus") == 1]
+    sh = [r for r in sh_all if r.get("docstatus") == 1]
+    so_live_names = {r["name"] for r in so}
 
     so_by_name = {r["name"]: r for r in so}
     pi_by_name = {r["name"]: r for r in pi}
 
     pi_by_so = defaultdict(list)
     for r in pi:
-        if r.get("docstatus") == 1 and r.get("sales_order"):
+        if r.get("sales_order") in so_live_names:
             pi_by_so[r["sales_order"]].append(r)
 
     sh_by_so = defaultdict(list)
     sh_by_pi = defaultdict(list)
     for r in sh:
-        if r.get("docstatus") != 1:
-            continue
-        if r.get("sales_order"):
+        if r.get("sales_order") in so_live_names:
             sh_by_so[r["sales_order"]].append(r)
         if r.get("purchase_invoice"):
             sh_by_pi[r["purchase_invoice"]].append(r)
 
     # أسعار الصرف الشاذة تُحسب أولاً لأن فحوصاً أخرى (تكلفة الشحن) يجب أن
-    # تتجاهل/تحذر عند الاعتماد على تحويل عملة غير موثوق.
-    pi_rates = [r.get("conversion_rate") for r in pi if r.get("conversion_rate")]
+    # تتجاهل/تحذر عند الاعتماد على تحويل عملة غير موثوق. مبنية فقط من فواتير
+    # شراء/شحن مرتبطة بطلبات بيع غير ملغاة، حتى لا تلوّث طلبات ملغاة المدى الطبيعي.
+    pi_rates = [r.get("conversion_rate") for r in pi
+                if r.get("conversion_rate") and r.get("sales_order") in so_live_names]
     pi_fx_bounds = mad_bounds(pi_rates, FX_RATE_MAD_K)
     bad_pi_fx = {r["name"] for r in pi if pi_fx_bounds and r.get("conversion_rate")
                  and not (pi_fx_bounds[0] <= r["conversion_rate"] <= pi_fx_bounds[1])}
 
-    sh_rates = [r.get("exchange_rate") for r in sh if r.get("exchange_rate")]
+    sh_rates = [r.get("exchange_rate") for r in sh
+                if r.get("exchange_rate") and r.get("sales_order") in so_live_names]
     sh_fx_bounds = mad_bounds(sh_rates, FX_RATE_MAD_K)
     bad_sh_fx = {r["name"] for r in sh if sh_fx_bounds and r.get("exchange_rate")
                  and not (sh_fx_bounds[0] <= r["exchange_rate"] <= sh_fx_bounds[1])}
@@ -106,19 +114,14 @@ def main():
     total_docs_by_agent = Counter()
 
     for r in so:
-        if r.get("docstatus") == 1:
-            total_docs_by_agent[r.get("sales_partner") or "(بدون وكيل)"] += 1
+        total_docs_by_agent[r.get("sales_partner") or "(بدون وكيل)"] += 1
 
     def flag_so(so_rec, reason, severity, detail):
-        if so_rec.get("docstatus") != 1:  # لا نعلّم طلبات ملغاة/مسودة (خارج مجموع المقام في ملخص الوكلاء)
-            return
         flags.add(so_rec["name"], "Sales Order", so_rec.get("sales_partner"), reason, severity, detail)
         flagged_docs_by_agent[so_rec.get("sales_partner") or "(بدون وكيل)"].add(so_rec["name"])
 
     # === فحص 1: طلب بيع بدون فاتورة شراء بعد X أيام ========================
     for r in so:
-        if r.get("docstatus") != 1 or r.get("status") in ("Cancelled",):
-            continue
         if r["name"] in pi_by_so:
             continue
         d = parse_date(r.get("transaction_date"))
@@ -159,7 +162,7 @@ def main():
 
     # === فحص 3: الطلب مكتمل ولا توجد فاتورة شحن =============================
     for r in so:
-        if r.get("docstatus") == 1 and r.get("status") == "Completed" and r["name"] not in sh_by_so:
+        if r.get("status") == "Completed" and r["name"] not in sh_by_so:
             flag_so(r, "طلب مكتمل بدون فاتورة شحن", "عالية",
                     f"status=Completed، تاريخ الطلب {r.get('transaction_date')}")
 
@@ -234,8 +237,6 @@ def main():
 
     # === فحص 7: كمية أو سعر صفر/سالب (بنود الطلب) ============================
     for r in so:
-        if r.get("docstatus") != 1:
-            continue
         for it in r.get("items", []):
             qty, rate = it.get("qty") or 0, it.get("rate") or 0
             if qty <= 0 or rate <= 0:
@@ -267,8 +268,6 @@ def main():
     # + نفس المبلغ الإجمالي بالضبط (احتمال إدخال الطلب مرتين بالخطأ).
     dup_groups = defaultdict(list)
     for r in so:
-        if r.get("docstatus") != 1:
-            continue
         key = (r.get("customer"), r.get("transaction_date"), round(r.get("grand_total") or 0, 2))
         dup_groups[key].append(r["name"])
     for (customer, d, total), names in dup_groups.items():
@@ -283,8 +282,6 @@ def main():
     # === فحص 10: حقول ناقصة ================================================
     required = ["customer", "sales_partner", "transaction_date"]
     for r in so:
-        if r.get("docstatus") != 1:
-            continue
         missing = [f for f in required if not r.get(f)]
         if not r.get("items"):
             missing.append("items")
@@ -296,8 +293,6 @@ def main():
     groups_qty = defaultdict(list)
     item_rows = []  # (so_rec, item, key)
     for r in so:
-        if r.get("docstatus") != 1:
-            continue
         agent = r.get("sales_partner") or "(بدون وكيل)"
         for it in r.get("items", []):
             key = (it.get("item_code"), agent)
