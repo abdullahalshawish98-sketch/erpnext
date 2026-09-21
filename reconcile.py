@@ -75,6 +75,7 @@ def main():
     sh_all = load("Shipments")
     data_corrections.apply(so_all, sh_all)
     so_all = exclusions.filter_out(so_all)
+    pi_all = exclusions.filter_out_pi(pi_all)
 
     # نتجاهل الطلبات/الفواتير/الشحنات الملغاة أو المسوَّدة تماماً من كل التحليل
     # (لا تُفحص، ولا تُدخَل في حسابات الوسيط/MAD المرجعية) — وليس فقط من التعليم.

@@ -21,6 +21,18 @@ EXCLUDED_SALES_ORDERS = {
 }
 
 
+# طلب المستخدم: استبعاد فاتورة الشراء هذه تحديداً من كل التحليلات (سعر صرف
+# شاذ = 0.10 — رآها المستخدم ولم يرغب باحتسابها ضمن فحص سعر الصرف).
+EXCLUDED_PURCHASE_INVOICES = {
+    "ACC-PINV-2026-11948": "استبعاد بطلب المستخدم",
+}
+
+
 def filter_out(so_records):
-    """يُعيد قائمة جديدة بدون المستندات المستبعَدة (لا يعدّل so_records نفسها)."""
+    """يُعيد قائمة جديدة بدون طلبات البيع المستبعَدة (لا يعدّل so_records نفسها)."""
     return [r for r in so_records if r.get("name") not in EXCLUDED_SALES_ORDERS]
+
+
+def filter_out_pi(pi_records):
+    """يُعيد قائمة جديدة بدون فواتير الشراء المستبعَدة (لا يعدّل pi_records نفسها)."""
+    return [r for r in pi_records if r.get("name") not in EXCLUDED_PURCHASE_INVOICES]
