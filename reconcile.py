@@ -15,6 +15,8 @@ from collections import Counter, defaultdict
 from datetime import date, datetime
 from pathlib import Path
 
+import data_corrections
+
 TODAY = date(2026, 9, 20)
 
 # ---- thresholds (قابلة للتعديل) --------------------------------------
@@ -70,6 +72,7 @@ def main():
     so_all = load("Sales_Order")
     pi_all = load("Purchase_Invoice")
     sh_all = load("Shipments")
+    data_corrections.apply(so_all, sh_all)
 
     # نتجاهل الطلبات/الفواتير/الشحنات الملغاة أو المسوَّدة تماماً من كل التحليل
     # (لا تُفحص، ولا تُدخَل في حسابات الوسيط/MAD المرجعية) — وليس فقط من التعليم.
