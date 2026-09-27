@@ -73,7 +73,7 @@ def main():
     so_all = load("Sales_Order")
     pi_all = load("Purchase_Invoice")
     sh_all = load("Shipments")
-    data_corrections.apply(so_all, sh_all)
+    data_corrections.apply(so_all, sh_all, pi_all)
     so_all = exclusions.filter_out(so_all)
     pi_all = exclusions.filter_out_pi(pi_all)
 

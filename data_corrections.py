@@ -31,8 +31,29 @@ SALES_ORDER_ITEM_FIXES = {
 }
 
 
-def apply(so_records, sh_records=None):
-    """يُعدِّل so_records/sh_records في مكانها (in place) ويُعيدها للتسلسل."""
+# SAL-ORD-2026-05236 كان طلباً خاطئاً (grand_total=1.00 LYD) للعميلة "الاء
+# الغراري"، أُعيد إدخاله بشكل صحيح بعد 3 أيام كطلب جديد SAL-ORD-2026-05368
+# (9,295 LYD) بدل تعديل الطلب الأصلي (استُبعد SAL-ORD-2026-05236 نفسه في
+# exclusions.py). لكن هذه الـ23 فاتورة شراء الحقيقية (5,705.62 LYD) بقيت
+# مربوطة في ERPNext بحقل sales_order إلى الطلب الخاطئ القديم — بينما سجلات
+# الشحن المرتبطة بها تشير نصياً للطلب الصحيح 05368، ما يؤكد أنها فعلاً
+# تخص الطلب الجديد. تصحيح محلي فقط (لا يلمس ERPNext) بطلب المستخدم.
+PURCHASE_INVOICE_FIXES = {
+    name: {"sales_order": "SAL-ORD-2026-05368"} for name in [
+        "ACC-PINV-2026-08792", "ACC-PINV-2026-08793", "ACC-PINV-2026-08794",
+        "ACC-PINV-2026-08795", "ACC-PINV-2026-08796", "ACC-PINV-2026-08798",
+        "ACC-PINV-2026-08799", "ACC-PINV-2026-08800-1", "ACC-PINV-2026-08802",
+        "ACC-PINV-2026-08803", "ACC-PINV-2026-08804", "ACC-PINV-2026-08807",
+        "ACC-PINV-2026-08809", "ACC-PINV-2026-08810", "ACC-PINV-2026-08811",
+        "ACC-PINV-2026-08812", "ACC-PINV-2026-08838", "ACC-PINV-2026-08840",
+        "ACC-PINV-2026-08842", "ACC-PINV-2026-08844", "ACC-PINV-2026-08846",
+        "ACC-PINV-2026-08906", "ACC-PINV-2026-08907",
+    ]
+}
+
+
+def apply(so_records, sh_records=None, pi_records=None):
+    """يُعدِّل so_records/sh_records/pi_records في مكانها (in place) ويُعيدها للتسلسل."""
     item_fixes = SALES_ORDER_ITEM_FIXES
     for r in so_records:
         fix = item_fixes.get(r.get("name"))
@@ -52,4 +73,10 @@ def apply(so_records, sh_records=None):
             if fix:
                 r.update(fix)
 
-    return so_records, sh_records
+    if pi_records is not None:
+        for r in pi_records:
+            fix = PURCHASE_INVOICE_FIXES.get(r.get("name"))
+            if fix:
+                r.update(fix)
+
+    return so_records, sh_records, pi_records
