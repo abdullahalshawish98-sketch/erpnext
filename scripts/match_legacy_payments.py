@@ -139,8 +139,46 @@ def main():
                 used_pairs.add(p2["row"])
                 break
 
+    # المرحلة 3: مطابقة مفردة بتجاهل الوكيل (اسم+قيمة فقط) لمن تبقّى بلا نتيجة
+    unmatched2 = [p for p in payments if p["row"] not in results and p["amount"] is not None]
+    for p in unmatched2:
+        cands = [s for s in sos if names_match(p["customer"], s["customer_name"])
+                 and abs(s["grand_total"] - p["amount"]) <= 1]
+        if len(cands) == 1:
+            results[p["row"]] = (cands[0]["name"], "مطابقة بتجاهل الوكيل (اسم+قيمة فقط) - يحتاج تأكيد")
+
+    # المرحلة 4: دفعتان (بتجاهل الوكيل) تجمعان لطلب واحد
+    unmatched3 = [p for p in payments if p["row"] not in results and p["amount"] is not None]
+    used_pairs2 = set()
+    for i, p1 in enumerate(unmatched3):
+        for p2 in unmatched3[i+1:]:
+            if p1["row"] in used_pairs2 or p2["row"] in used_pairs2:
+                continue
+            if not names_match(p1["customer"], p2["customer"]):
+                continue
+            total = round(p1["amount"] + p2["amount"], 2)
+            cands = [s for s in sos if names_match(p1["customer"], s["customer_name"])
+                     and abs(s["grand_total"] - total) <= 1]
+            if len(cands) == 1:
+                results[p1["row"]] = (cands[0]["name"], f"دفعتان (بتجاهل الوكيل) مع صف {p2['row']} - يحتاج تأكيد")
+                results[p2["row"]] = (cands[0]["name"], f"دفعتان (بتجاهل الوكيل) مع صف {p1['row']} - يحتاج تأكيد")
+                used_pairs2.add(p1["row"])
+                used_pairs2.add(p2["row"])
+                break
+
+    # تقرير للمرشحين المتعددين (بلا بت تلقائي) لمن تبقّى بلا نتيجة بعد كل المراحل
+    still_unmatched = [p for p in payments if p["row"] not in results and p["amount"] is not None]
+    multi_candidates = {}
+    for p in still_unmatched:
+        cands = [s for s in sos if names_match(p["customer"], s["customer_name"])
+                 and abs(s["grand_total"] - p["amount"]) <= 1]
+        if cands:
+            multi_candidates[p["row"]] = [c["name"] for c in cands]
+
     matched = sum(1 for p in payments if p["row"] in results)
     print(f"تمت المطابقة: {matched} من {len(payments)}")
+    print(f"مرشحون متعددون بلا بتّ (اسم+قيمة): {len(multi_candidates)}")
+    print(f"بلا أي مرشح إطلاقاً: {len(payments) - matched - len(multi_candidates)}")
 
     # كتابة النتيجة في نسخة من الإكسل
     wb = openpyxl.load_workbook(XLSX_IN)
@@ -148,9 +186,14 @@ def main():
     ws.cell(row=1, column=5, value="رقم طلب البيع المطابَق")
     ws.cell(row=1, column=6, value="طريقة المطابقة")
     for p in payments:
-        r, m = results.get(p["row"], (None, None))
-        ws.cell(row=p["row"], column=5, value=r or "")
-        ws.cell(row=p["row"], column=6, value=m or "لم تُطابَق")
+        if p["row"] in results:
+            r, m = results[p["row"]]
+        elif p["row"] in multi_candidates:
+            r, m = " / ".join(multi_candidates[p["row"]]), f"مرشحون متعددون ({len(multi_candidates[p['row']])}) بلا بتّ - يحتاج اختياراً يدوياً"
+        else:
+            r, m = "", "لا يوجد أي مرشح (لا تشابه اسم ولا قيمة مطابِقة)"
+        ws.cell(row=p["row"], column=5, value=r)
+        ws.cell(row=p["row"], column=6, value=m)
     wb.save(XLSX_OUT)
     print(f"حُفظ الملف في {XLSX_OUT}")
 
