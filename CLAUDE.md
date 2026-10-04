@@ -29,6 +29,7 @@ python erpnext_explorer.py export --full                # سحب كل المست
 python erpnext_explorer.py unpaid --top 30                  # أقدم الطلبات/الفواتير التي لم يكتمل دفعها
 python erpnext_explorer.py debtors --top 20                 # أكثر العملاء ديوناً (بالمبلغ)
 python erpnext_explorer.py debtors --by count               # أكثر العملاء عدداً للطلبات غير المسددة
+python erpnext_explorer.py debtors --group agent            # ديون كل وكيل (حقل sales_partner)
 # --source order (الافتراضي: إجمالي طلب البيع ناقص الدفعة المقدمة advance_paid) أو --source invoice (المتبقي في Sales Invoice)
 ```
 
