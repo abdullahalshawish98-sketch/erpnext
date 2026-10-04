@@ -40,9 +40,19 @@ EXCLUDED_PURCHASE_INVOICES = {
 }
 
 
+# طلب المستخدم: "عجز كرت" ليس اسم عميل حقيقي — علامة داخلية لطلبات دفع فاشلة
+# (Declined Card)، تتكرر عبر عدة وكلاء بقيم وهمية (0 أو 1 LYD). استبعاد ديناميكي
+# بالاسم (لا بقائمة أرقام ثابتة) ليشمل أي طلب مستقبلي بنفس الاسم تلقائياً.
+EXCLUDED_CUSTOMER_NAMES = {"عجز كرت"}
+
+
 def filter_out(so_records):
     """يُعيد قائمة جديدة بدون طلبات البيع المستبعَدة (لا يعدّل so_records نفسها)."""
-    return [r for r in so_records if r.get("name") not in EXCLUDED_SALES_ORDERS]
+    return [
+        r for r in so_records
+        if r.get("name") not in EXCLUDED_SALES_ORDERS
+        and (r.get("customer_name") or "").strip() not in EXCLUDED_CUSTOMER_NAMES
+    ]
 
 
 def filter_out_pi(pi_records):
