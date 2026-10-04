@@ -58,12 +58,17 @@ def build_stopwords(sos, max_df=8):
 STOPWORDS = frozenset()  # تُهيَّأ في main() من بيانات العملاء الفعلية
 
 
-def names_match(a, b):
+def names_match(a, b, require_distinctive=True):
+    """require_distinctive=True: كلمة مشتركة غير شائعة مطلوبة (الاسم هو الإشارة
+    الوحيدة). False: أي كلمة مشتركة تكفي (يُستخدم حين يوجد تأكيد إضافي من
+    الوكيل+القيمة+التاريخ معاً، كما طلب المستخدم)."""
     ta, tb = name_tokens(a), name_tokens(b)
     if not ta or not tb:
         return False
     shared = ta & tb
-    return bool(shared - STOPWORDS)
+    if not shared:
+        return False
+    return bool(shared - STOPWORDS) if require_distinctive else True
 
 
 def date_ok(payment_date, so_date_str):
@@ -109,6 +114,11 @@ def load_payments():
 
 
 def candidates_for(payment, sos):
+    """جُرِّب السماح بكلمة اسم شائعة عند تطابق الوكيل (على افتراض أن
+    الوكيل+القيمة+التاريخ يعوّضون ضعف إشارة الاسم) فتبيّن أنه غير آمن: وكيل
+    واحد يخدم مئات العملاء، فكلمة مثل "متجر" أو "محمد" تطابق عشرات منهم —
+    فعاد "متجر الحناشي" يطابق "متجر سلسبيل" و"امنة محمد" يطابق "معاوية محمد"
+    زوراً. لذا يُطلب دوماً اسم مميّز (غير شائع) بصرف النظر عن تطابق الوكيل."""
     agent_raw = payment["agent"]
     mapped = AGENT_MAP.get(agent_raw, agent_raw if agent_raw else None)
     pool = sos
