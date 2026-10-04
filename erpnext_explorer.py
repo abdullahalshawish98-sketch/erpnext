@@ -181,7 +181,8 @@ def outstanding_rows(source):
         for r in fetch_all("Sales Invoice", flt):
             out.append({"doc": r["name"], "customer": r.get("customer_name") or r.get("customer"),
                         "date": r.get("posting_date"), "total": r.get("grand_total") or 0,
-                        "outstanding": r.get("outstanding_amount") or 0, "currency": r.get("currency")})
+                        "outstanding": r.get("outstanding_amount") or 0, "currency": r.get("currency"),
+                        "agent": r.get("sales_partner") or "(بدون وكيل)"})
     else:
         flt = [["docstatus", "!=", 2], ["status", "not in", ["Cancelled", "Closed"]]]
         for r in fetch_all("Sales Order", flt):
@@ -189,7 +190,8 @@ def outstanding_rows(source):
             if due > 0.005:
                 out.append({"doc": r["name"], "customer": r.get("customer_name") or r.get("customer"),
                             "date": r.get("transaction_date"), "total": r.get("grand_total") or 0,
-                            "outstanding": due, "currency": r.get("currency")})
+                            "outstanding": due, "currency": r.get("currency"),
+                            "agent": r.get("sales_partner") or "(بدون وكيل)"})
     today = date.today()
     for r in out:
         r["age_days"] = (today - date.fromisoformat(str(r["date"])[:10])).days if r["date"] else None
@@ -224,10 +226,11 @@ def cmd_debtors(a):
     rows = outstanding_rows(a.source)
     if not rows:
         return
+    grp = "agent" if a.group == "agent" else "customer"
     agg = {}
     for r in rows:
-        g = agg.setdefault((r["customer"], r["currency"]),
-                           {"customer": r["customer"], "currency": r["currency"], "orders": 0,
+        g = agg.setdefault((r[grp], r["currency"]),
+                           {grp: r[grp], "currency": r["currency"], "orders": 0,
                             "outstanding": 0.0, "oldest": r["date"], "oldest_age_days": r["age_days"]})
         g["orders"] += 1
         g["outstanding"] += r["outstanding"]
@@ -236,9 +239,9 @@ def cmd_debtors(a):
     key = (lambda g: g["orders"]) if a.by == "count" else (lambda g: g["outstanding"])
     res = sorted(agg.values(), key=key, reverse=True)
     save("debtors_" + a.source, res)
-    print(f"\nأكثر {min(a.top, len(res))} عملاء ديوناً (من أصل {len(res)}):\n")
+    print(f"\nأكثر {min(a.top, len(res))} {'وكلاء' if grp == 'agent' else 'عملاء'} ديوناً (من أصل {len(res)}):\n")
     show(money(res[:a.top], ["outstanding"]),
-         ["customer", "orders", "outstanding", "currency", "oldest", "oldest_age_days"])
+         [grp, "orders", "outstanding", "currency", "oldest", "oldest_age_days"])
     totals = {}
     for g in res:
         totals[g["currency"]] = totals.get(g["currency"], 0) + g["outstanding"]
@@ -268,6 +271,8 @@ def main():
                        help="invoice = Sales Invoice outstanding | order = Sales Order total minus advance paid")
         s.add_argument("--top", type=int, default=20)
         if name == "debtors":
+            s.add_argument("--group", choices=["customer", "agent"], default="customer",
+                           help="agent = تجميع حسب الوكيل (sales_partner)")
             s.add_argument("--by", choices=["amount", "count"], default="amount")
         s.set_defaults(fn=fn)
 
