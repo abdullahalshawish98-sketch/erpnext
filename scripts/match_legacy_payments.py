@@ -9,8 +9,9 @@
   3. قيمة الدفعة = grand_total لطلب بيع واحد (بسماحية ±1).
   4. عند عدم وجود مطابقة مفردة: دفعتان لنفس العميل والوكيل مجموعهما = grand_total
      لطلب بيع واحد (بسماحية ±1).
-  تاريخ المعاملة يُستخدم فقط لترجيح الأقرب عند تعدد المرشحين، لا للاستبعاد —
-  لأن الدفعة قد تأتي بعد الطلب بأسابيع (بعد وصول الشحنة).
+  قيد التاريخ (بطلب المستخدم): لا يمكن أن تكون الدفعة أسبق من تاريخ طلب البيع
+  بأكثر من 3 أيام (الدفعة قد تتأخر عن الطلب أسابيع، لكنها لا تتقدّمه إلا بأيام
+  قليلة فقط) — فيُستبعد أي مرشح يخالف هذا القيد قبل أي معيار آخر.
 """
 import json
 import re
@@ -42,11 +43,35 @@ def name_tokens(s):
     return {t for t in norm_name(s).split(" ") if len(t) >= 2}
 
 
+def build_stopwords(sos, max_df=8):
+    """كلمات شائعة جداً بين أسماء العملاء (مثل 'متجر' أو 'محمد') لا تكفي وحدها
+    كإشارة تطابق — تُستبعد من الاعتماد عليها بمفردها."""
+    from collections import Counter
+    names = {norm_name(s["customer_name"]) for s in sos}
+    df = Counter()
+    for n in names:
+        for t in {t for t in n.split(" ") if len(t) >= 2}:
+            df[t] += 1
+    return {t for t, c in df.items() if c > max_df}
+
+
+STOPWORDS = frozenset()  # تُهيَّأ في main() من بيانات العملاء الفعلية
+
+
 def names_match(a, b):
     ta, tb = name_tokens(a), name_tokens(b)
     if not ta or not tb:
         return False
-    return bool(ta & tb)
+    shared = ta & tb
+    return bool(shared - STOPWORDS)
+
+
+def date_ok(payment_date, so_date_str):
+    """الدفعة لا تتقدّم على طلب البيع بأكثر من 3 أيام (قد تتأخر عنه بلا حد)."""
+    if not payment_date or not so_date_str:
+        return False
+    so_date = datetime.strptime(so_date_str, "%Y-%m-%d").date()
+    return (so_date - payment_date).days <= 3
 
 
 def load_sales_orders():
@@ -89,12 +114,16 @@ def candidates_for(payment, sos):
     pool = sos
     if mapped:
         pool = [s for s in sos if s["sales_partner"] == mapped]
-    return [s for s in pool if names_match(payment["customer"], s["customer_name"])]
+    return [s for s in pool if names_match(payment["customer"], s["customer_name"])
+            and date_ok(payment["date"], s["transaction_date"])]
 
 
 def main():
+    global STOPWORDS
     sos = load_sales_orders()
+    STOPWORDS = build_stopwords(sos)
     payments = load_payments()
+    print(f"كلمات شائعة مُستبعدة من الاعتماد عليها وحدها: {len(STOPWORDS)}")
     print(f"طلبات البيع المرشَّحة (docstatus=1): {len(sos)}")
     print(f"صفوف الدفعات: {len(payments)}")
 
@@ -130,7 +159,11 @@ def main():
             if a1 and a2 and a1 != a2:
                 continue
             total = round(p1["amount"] + p2["amount"], 2)
-            cands = candidates_for(p1, sos) or candidates_for(p2, sos)
+            earliest = min(d for d in (p1["date"], p2["date"]) if d) if (p1["date"] or p2["date"]) else None
+            mapped1 = AGENT_MAP.get(p1["agent"], p1["agent"] or None)
+            pool = [s for s in sos if not mapped1 or s["sales_partner"] == mapped1]
+            cands = [s for s in pool if names_match(p1["customer"], s["customer_name"])
+                     and date_ok(earliest, s["transaction_date"])]
             exact = [s for s in cands if abs(s["grand_total"] - total) <= 1]
             if len(exact) == 1:
                 results[p1["row"]] = (exact[0]["name"], f"دفعتان مجموعهما لطلب واحد (مع صف {p2['row']})")
@@ -143,6 +176,7 @@ def main():
     unmatched2 = [p for p in payments if p["row"] not in results and p["amount"] is not None]
     for p in unmatched2:
         cands = [s for s in sos if names_match(p["customer"], s["customer_name"])
+                 and date_ok(p["date"], s["transaction_date"])
                  and abs(s["grand_total"] - p["amount"]) <= 1]
         if len(cands) == 1:
             results[p["row"]] = (cands[0]["name"], "مطابقة بتجاهل الوكيل (اسم+قيمة فقط) - يحتاج تأكيد")
@@ -157,7 +191,9 @@ def main():
             if not names_match(p1["customer"], p2["customer"]):
                 continue
             total = round(p1["amount"] + p2["amount"], 2)
+            earliest = min(d for d in (p1["date"], p2["date"]) if d) if (p1["date"] or p2["date"]) else None
             cands = [s for s in sos if names_match(p1["customer"], s["customer_name"])
+                     and date_ok(earliest, s["transaction_date"])
                      and abs(s["grand_total"] - total) <= 1]
             if len(cands) == 1:
                 results[p1["row"]] = (cands[0]["name"], f"دفعتان (بتجاهل الوكيل) مع صف {p2['row']} - يحتاج تأكيد")
@@ -171,6 +207,7 @@ def main():
     multi_candidates = {}
     for p in still_unmatched:
         cands = [s for s in sos if names_match(p["customer"], s["customer_name"])
+                 and date_ok(p["date"], s["transaction_date"])
                  and abs(s["grand_total"] - p["amount"]) <= 1]
         if cands:
             multi_candidates[p["row"]] = [c["name"] for c in cands]
