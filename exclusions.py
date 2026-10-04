@@ -66,5 +66,11 @@ def filter_out(so_records):
 
 
 def filter_out_pi(pi_records):
-    """يُعيد قائمة جديدة بدون فواتير الشراء المستبعَدة (لا يعدّل pi_records نفسها)."""
-    return [r for r in pi_records if r.get("name") not in EXCLUDED_PURCHASE_INVOICES]
+    """يُعيد قائمة جديدة بدون فواتير الشراء المستبعَدة (لا يعدّل pi_records نفسها).
+    يستبعد أيضاً كل المرتجعات (is_return=1) ديناميكياً بطلب المستخدم — قيمها
+    سالبة وتُفسِد حساب الانحرافات، وليست فواتير شراء حقيقية قابلة للمقارنة."""
+    return [
+        r for r in pi_records
+        if r.get("name") not in EXCLUDED_PURCHASE_INVOICES
+        and not r.get("is_return")
+    ]
