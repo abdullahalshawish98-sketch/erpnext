@@ -4,10 +4,12 @@
 بالضبط (قاعدة "الاسترجاع يرجع بعد ساعة تقريباً من الدفع")، وليس بترتيب
 تسلسلي بسيط. إن تعادل مجموع استرجاعات دفعة كاملة مع مجموع مشترياتها،
 تُعتبر الدفعة ملغاة بالكامل (صافٍ صفر، لا فاتورة متوقَّعة).
-الاستخدام: python scripts/reconcile_gift_card_movements.py <مسار ملف حركات شي ان xlsx>
+يحفظ أيضاً كل العمليات المدفوعة وغير المُفسَّرة (تاريخ، وقت، حساب، مبلغ) في
+ملف CSV لكل البطاقات مجتمعة.
+الاستخدام: python scripts/reconcile_gift_card_movements.py <مسار ملف حركات شي ان xlsx> [مسار ملف الإخراج CSV]
 """
 import sys
-import openpyxl, json, re
+import openpyxl, json, re, csv
 from datetime import datetime
 from collections import defaultdict
 
@@ -94,6 +96,7 @@ def reconcile_account(purchases, refunds):
 
 
 grand_unexplained = 0
+all_unexplained_rows = []
 for cid in shein_cards:
     name = card_by_serial.get(cid)
     erp_rows = sorted([p for p in pis if p.get('gift_card') == name and p.get('docstatus') == 1],
@@ -120,8 +123,8 @@ for cid in shein_cards:
             sessions.append(cur)
 
         for sess in sessions:
-            purchases = [{'amount': -t[8], 'date': t[4], 'time': t[5]} for t in sess if t[7] == 'Purchase']
-            refunds = [{'amount': t[8], 'date': t[4], 'time': t[5]} for t in sess if t[7] == 'Refund']
+            purchases = [{'amount': -t[8], 'date': t[4], 'time': t[5], 'account': acc} for t in sess if t[7] == 'Purchase']
+            refunds = [{'amount': t[8], 'date': t[4], 'time': t[5], 'account': acc} for t in sess if t[7] == 'Refund']
             results, leftover = reconcile_account(purchases, refunds)
             all_results.extend(results)
             if leftover:
@@ -144,6 +147,10 @@ for cid in shein_cards:
         print(f"  {n['date']} {n['time']}  صافي={n['net']:8.2f}$  ({n['note']})  -> {status}")
         if not match:
             unexplained.append(n)
+            all_unexplained_rows.append({
+                'card_id': cid, 'date': n['date'], 'time': n['time'],
+                'account': n['account'], 'amount': n['net'],
+            })
 
     total_unexp = round(sum(n['net'] for n in unexplained), 2)
     print(f'  >>> غير مفسَّر: {total_unexp}$  ({len(unexplained)} عملية)')
@@ -154,3 +161,11 @@ for cid in shein_cards:
 
 print('==================================================')
 print('الإجمالي العام غير المفسَّر:', round(grand_unexplained, 2))
+
+out_path = sys.argv[2] if len(sys.argv) > 2 else 'data/unexplained_shein_purchases.csv'
+all_unexplained_rows.sort(key=lambda r: (r['card_id'], r['date'], r['time']))
+with open(out_path, 'w', encoding='utf-8-sig', newline='') as f:
+    w = csv.DictWriter(f, fieldnames=['card_id', 'date', 'time', 'account', 'amount'])
+    w.writeheader()
+    w.writerows(all_unexplained_rows)
+print('تم حفظ العمليات غير المفسَّرة في:', out_path)
