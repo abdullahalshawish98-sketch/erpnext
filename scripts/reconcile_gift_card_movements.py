@@ -165,17 +165,41 @@ for cid in shein_cards:
 
         acc_leftover_purchases = []
         acc_leftover_refunds = []
+        acc_all_purchases = []
         for sess in sessions:
             purchases = [{'amount': -t[8], 'date': t[4], 'time': t[5], 'account': acc} for t in sess if t[7] == 'Purchase']
             refunds = [{'amount': t[8], 'date': t[4], 'time': t[5], 'account': acc} for t in sess if t[7] == 'Refund']
             results, unpaired_p_idx, unpaired_r_idx = reconcile_session(purchases, refunds, erp_by_value)
             all_results.extend(results)
+            acc_all_purchases.extend(results)
             acc_leftover_purchases.extend(results[i] for i in unpaired_p_idx)
             acc_leftover_refunds.extend(refunds[i] for i in unpaired_r_idx)
 
         # مرحلة الإقران الموسَّع (حتى 24 ساعة) على مستوى الحساب كله، قد تمتد
         # عبر حدود الجلسات الضيقة أعلاه
         wide_match(acc_leftover_purchases, acc_leftover_refunds, erp_by_value)
+
+        # استرجاعات بقيت فعلاً بلا أي شراء يقابلها — إشارة تشخيصية مهمة:
+        # إما خطأ "نسيان طرح" على فاتورة قريبة زمنياً (~ساعة)، أو حالة نفاذ
+        # مخزون حقيقية (فارق نصف يوم فأكثر) تحتاج فاتورة مرتجع منفصلة
+        for lr in acc_leftover_refunds:
+            r_dt = dt(lr['date'], lr['time'])
+            best = None
+            for p in acc_all_purchases:
+                p_dt = dt(p['date'], p['time'])
+                if p_dt >= r_dt:
+                    continue
+                gap_min = (r_dt - p_dt).total_seconds() / 60
+                if best is None or gap_min < best[0]:
+                    best = (gap_min, p)
+            if best:
+                gap_min, p = best
+                guess = 'نفس الفاتورة القريبة (نسيان طرح محتمل)' if gap_min <= 180 else '📦 نفاذ مخزون محتمل — فاتورة مرتجع منفصلة'
+                print(f"  [استرجاع غير مُستخدَم] {lr['date']} {lr['time']}  -{lr['amount']}$  (حساب {lr['account']}) "
+                      f"| أقرب شراء سابق: {p['date']} {p['time']} صافيه الحالي={p['net']}$ (فاتورة: {p.get('match')}) "
+                      f"| الفارق {gap_min:.0f} دقيقة -> {guess}")
+            else:
+                print(f"  [استرجاع غير مُستخدَم] {lr['date']} {lr['time']}  -{lr['amount']}$  (حساب {lr['account']}) | لا يوجد شراء سابق على نفس الحساب")
 
     all_results.sort(key=lambda x: (x['date'], x['time']))
     print('===', cid, '===')
