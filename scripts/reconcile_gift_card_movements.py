@@ -45,54 +45,91 @@ def dt(date_, time_):
     return datetime.fromisoformat(f"{date_} {time_}")
 
 
-def reconcile_account(purchases, refunds):
-    """مطابقة جشعة: كل زوج (شراء، استرجاع) مرشَّح حسب أقرب فارق لـ60 دقيقة،
-    تُرتَّب كل الأزواج الممكنة تصاعدياً حسب |الفارق - 60min| وتُؤخَذ الأفضل أولاً."""
-    # إلغاء كامل للجلسة: إن تساوى مجموع كل مشترياتها مع مجموع كل استرجاعاتها،
-    # فالأرجح أنها كلها أُرجعت (لا حاجة لمحاولة إقران فردي غامض)
+def take(erp_by_value, value):
+    v = round(value, 2)
+    names = erp_by_value.get(v)
+    if names:
+        return names.pop()
+    return None
+
+
+def candidates(purchases, refunds, p_idx, r_idx, lo_min, hi_min, target_min):
+    cands = []
+    for pi in p_idx:
+        for ri in r_idx:
+            delta_min = (dt(refunds[ri]['date'], refunds[ri]['time']) - dt(purchases[pi]['date'], purchases[pi]['time'])).total_seconds() / 60
+            if lo_min <= delta_min <= hi_min:
+                cands.append((abs(delta_min - target_min), pi, ri))
+    cands.sort(key=lambda x: x[0])
+    return cands
+
+
+def reconcile_session(purchases, refunds, erp_by_value):
+    """مرحلة أولى لكل جلسة (نشاط متقارب زمنياً لنفس الحساب):
+    1) إلغاء كامل للجلسة إن تساوى مجموع الشراء مع مجموع الاسترجاع (قطعة أُضيفت
+       لتفادي رسوم التوصيل على الطلبات الأقل من 41$، أُلغيت خلال الساعة الأولى).
+    2) لكل شراء: إن طابقت قيمته الكاملة فاتورة متاحة مباشرة، يُقبَل بلا استرجاع.
+    3) إقران عادي خلال 10-180 دقيقة (الأقرب لـ60 دقيقة) — النمط الطبيعي.
+    يُعيد: (النتائج، فهارس المشتريات غير المحسومة، فهارس الاسترجاعات غير المحسومة)
+    مع المشتريات/الاسترجاعات الأصلية، لتُمرَّر لاحقاً لمرحلة الإقران الموسَّع
+    على مستوى الحساب كله (قد تمتد عبر عدة جلسات)."""
     if purchases and refunds and abs(sum(p['amount'] for p in purchases) - sum(r['amount'] for r in refunds)) < 0.05:
-        results = [{**p, 'net': 0.0, 'note': 'جلسة أُلغيت بالكامل (مجموع الشراء = مجموع الاسترجاع)'} for p in purchases]
-        return results, []
+        results = [{**p, 'net': 0.0, 'note': 'جلسة أُلغيت بالكامل (مجموع الشراء = مجموع الاسترجاع)', 'match': None} for p in purchases]
+        return results, [], []
 
-    candidates = []
-    for pi, p in enumerate(purchases):
-        for ri, r in enumerate(refunds):
-            delta_min = (dt(r['date'], r['time']) - dt(p['date'], p['time'])).total_seconds() / 60
-            if 10 <= delta_min <= 180:  # نافذة معقولة حول الساعة
-                candidates.append((abs(delta_min - 60), pi, ri))
-    candidates.sort(key=lambda x: x[0])
-
+    all_p = list(range(len(purchases)))
+    all_r = list(range(len(refunds)))
     used_p, used_r = set(), set()
-    pair_of = {}
-    for _, pi, ri in candidates:
+    note_of = {}
+
+    for pi in all_p:
+        matched_name = take(erp_by_value, purchases[pi]['amount'])
+        if matched_name:
+            used_p.add(pi)
+            note_of[pi] = ('مطابقة مباشرة', None, matched_name)
+
+    remaining_p = [i for i in all_p if i not in used_p]
+    for _, pi, ri in candidates(purchases, refunds, remaining_p, all_r, 10, 180, 60):
         if pi in used_p or ri in used_r:
             continue
+        net = round(purchases[pi]['amount'] - refunds[ri]['amount'], 2)
+        matched_name = take(erp_by_value, net)
         used_p.add(pi)
         used_r.add(ri)
-        pair_of[pi] = ri
-
-    # دفعة كاملة الإلغاء: كل المشتريات غير المُقرَنة + كل الاسترجاعات غير المُقرَنة
-    # ضمن نفس الحساب، إن تساوى مجموعهما، تُعتبر كلها صافي صفر
-    unpaired_p_idx = [i for i in range(len(purchases)) if i not in used_p]
-    unpaired_r_idx = [i for i in range(len(refunds)) if i not in used_r]
-    full_cancel = set()
-    if unpaired_p_idx and unpaired_r_idx:
-        sp = sum(purchases[i]['amount'] for i in unpaired_p_idx)
-        sr = sum(refunds[i]['amount'] for i in unpaired_r_idx)
-        if abs(sp - sr) < 0.05:
-            full_cancel = set(unpaired_p_idx)
+        note_of[pi] = (f"مقرون باسترجاع {refunds[ri]['time']}", net, matched_name)
 
     results = []
     for pi, p in enumerate(purchases):
-        if pi in pair_of:
-            net = round(p['amount'] - refunds[pair_of[pi]]['amount'], 2)
-            results.append({**p, 'net': net, 'note': f"مقرون باسترجاع {refunds[pair_of[pi]]['time']}"})
-        elif pi in full_cancel:
-            results.append({**p, 'net': 0.0, 'note': 'ضمن دفعة أُلغيت بالكامل'})
+        if pi in note_of:
+            note, net, matched_name = note_of[pi]
+            results.append({**p, 'net': round(p['amount'], 2) if net is None else net, 'note': note, 'match': matched_name})
         else:
-            results.append({**p, 'net': round(p['amount'], 2), 'note': 'بلا استرجاع'})
-    leftover_refunds = [refunds[i] for i in unpaired_r_idx if i not in full_cancel]
-    return results, leftover_refunds
+            results.append({**p, 'net': round(p['amount'], 2), 'note': 'بلا استرجاع (بعد)', 'match': None})
+    unpaired_p_idx = [i for i in all_p if i not in used_p]
+    unpaired_r_idx = [i for i in all_r if i not in used_r]
+    return results, unpaired_p_idx, unpaired_r_idx
+
+
+def wide_match(leftover_result_dicts, leftover_refunds, erp_by_value):
+    """المرحلة الموسَّعة (حتى 24 ساعة)، على مستوى الحساب كله (قد تمتد عبر
+    حدود الجلسة الضيقة) — تُقبَل فقط إن طابق الصافي فاتورة متاحة فعلاً، تفادياً
+    لإفساد مشترياتٍ سليمة بتخمين زمني لا يؤكده أي دليل محاسبي. يُعدِّل
+    leftover_result_dicts في مكانها (net/note/match) للعناصر التي أُقرِنت."""
+    all_p = list(range(len(leftover_result_dicts)))
+    all_r = list(range(len(leftover_refunds)))
+    used_p, used_r = set(), set()
+    for _, pi, ri in candidates(leftover_result_dicts, leftover_refunds, all_p, all_r, 180, 1440, 180):
+        if pi in used_p or ri in used_r:
+            continue
+        net = round(leftover_result_dicts[pi]['net'] - leftover_refunds[ri]['amount'], 2)
+        matched_name = take(erp_by_value, net)
+        if matched_name:
+            used_p.add(pi)
+            used_r.add(ri)
+            r = leftover_refunds[ri]
+            leftover_result_dicts[pi]['net'] = net
+            leftover_result_dicts[pi]['note'] = f"⚠ شاذة — مقرون باسترجاع متأخر {r['date']} {r['time']} (نسيان إلغاء محتمل)"
+            leftover_result_dicts[pi]['match'] = matched_name
 
 
 grand_unexplained = 0
@@ -101,14 +138,18 @@ for cid in shein_cards:
     name = card_by_serial.get(cid)
     erp_rows = sorted([p for p in pis if p.get('gift_card') == name and p.get('docstatus') == 1],
                        key=lambda p: (p.get('posting_date', ''), p.get('creation', '')))
-    erp_pool = [(round(p.get('total') or 0, 2), p.get('name')) for p in erp_rows]
+    erp_by_value = defaultdict(list)
+    for p in erp_rows:
+        erp_by_value[round(p.get('total') or 0, 2)].append(p.get('name'))
+    return_names = {p['name'] for p in erp_rows if p.get('is_return')}
 
     accounts = sorted({t[6] for t in shein_cards[cid] if t[7] != 'Activated'})
     all_results = []
     for acc in accounts:
         events = sorted((t for t in shein_cards[cid] if t[7] != 'Activated' and t[6] == acc), key=lambda t: (t[4], t[5]))
-        # تقسيم نشاط الحساب إلى جلسات منفصلة عند أي فجوة زمنية > 3 ساعات، لتفادي
-        # خلط دفعتين مختلفتين (صباحية ومسائية مثلاً) تحت نفس رمز الحساب المختصر
+        # تقسيم نشاط الحساب إلى جلسات ضيقة عند أي فجوة زمنية > 3 ساعات، لحصر
+        # كشف "الإلغاء الكامل" ضمن دفعة واحدة متقاربة فقط (لا تختلط دفعة صباحية
+        # بأخرى مسائية تحت نفس رمز الحساب المختصر)
         sessions = []
         cur = []
         prev_dt = None
@@ -122,40 +163,53 @@ for cid in shein_cards:
         if cur:
             sessions.append(cur)
 
+        acc_leftover_purchases = []
+        acc_leftover_refunds = []
         for sess in sessions:
             purchases = [{'amount': -t[8], 'date': t[4], 'time': t[5], 'account': acc} for t in sess if t[7] == 'Purchase']
             refunds = [{'amount': t[8], 'date': t[4], 'time': t[5], 'account': acc} for t in sess if t[7] == 'Refund']
-            results, leftover = reconcile_account(purchases, refunds)
+            results, unpaired_p_idx, unpaired_r_idx = reconcile_session(purchases, refunds, erp_by_value)
             all_results.extend(results)
-            if leftover:
-                print(f'  [تنبيه] حساب {acc} في البطاقة {cid}: استرجاعات بلا شراء مقابل واضح: {[r["amount"] for r in leftover]}')
+            acc_leftover_purchases.extend(results[i] for i in unpaired_p_idx)
+            acc_leftover_refunds.extend(refunds[i] for i in unpaired_r_idx)
+
+        # مرحلة الإقران الموسَّع (حتى 24 ساعة) على مستوى الحساب كله، قد تمتد
+        # عبر حدود الجلسات الضيقة أعلاه
+        wide_match(acc_leftover_purchases, acc_leftover_refunds, erp_by_value)
 
     all_results.sort(key=lambda x: (x['date'], x['time']))
     print('===', cid, '===')
     unexplained = []
+    remaining_pool_names = {n for names in erp_by_value.values() for n in names}
     for n in all_results:
         if abs(n['net']) < 0.05:
             print(f"  {n['date']} {n['time']}  صافي={n['net']:8.2f}$  -> {n['note']}")
             continue
-        match = None
-        for ev, en in erp_pool:
-            if abs(ev - n['net']) < 0.05:
-                match = en
-                erp_pool.remove((ev, en))
-                break
-        status = f'مطابق {match}' if match else 'غير مفسَّر'
+        match = n.get('match')
+        if match:
+            status = f'مطابق {match}'
+        else:
+            remaining_pool_names = {nm for names in erp_by_value.values() for nm in names}
+            remaining_returns = return_names & remaining_pool_names
+            if remaining_returns:
+                status = f'📦 غير مفسَّر، لكن توجد فاتورة مرتجع غير مستخدَمة على نفس البطاقة ({", ".join(remaining_returns)}) — قد تكون حالة نفاذ مخزون'
+            else:
+                status = 'غير مفسَّر'
         print(f"  {n['date']} {n['time']}  صافي={n['net']:8.2f}$  ({n['note']})  -> {status}")
         if not match:
             unexplained.append(n)
+            remaining_pool_names = {nm for names in erp_by_value.values() for nm in names}
             all_unexplained_rows.append({
                 'card_id': cid, 'date': n['date'], 'time': n['time'],
                 'account': n['account'], 'amount': n['net'],
+                'possible_out_of_stock': bool(return_names & remaining_pool_names),
             })
 
     total_unexp = round(sum(n['net'] for n in unexplained), 2)
     print(f'  >>> غير مفسَّر: {total_unexp}$  ({len(unexplained)} عملية)')
-    if erp_pool:
-        print('  فواتير ERPNext متبقية (غير مُستخدَمة إطلاقاً):', erp_pool)
+    leftover_invoices = [(v, nm) for v, names in erp_by_value.items() for nm in names]
+    if leftover_invoices:
+        print('  فواتير ERPNext متبقية (غير مُستخدَمة إطلاقاً):', leftover_invoices)
     grand_unexplained += total_unexp
     print()
 
@@ -165,7 +219,7 @@ print('الإجمالي العام غير المفسَّر:', round(grand_unexpl
 out_path = sys.argv[2] if len(sys.argv) > 2 else 'data/unexplained_shein_purchases.csv'
 all_unexplained_rows.sort(key=lambda r: (r['card_id'], r['date'], r['time']))
 with open(out_path, 'w', encoding='utf-8-sig', newline='') as f:
-    w = csv.DictWriter(f, fieldnames=['card_id', 'date', 'time', 'account', 'amount'])
+    w = csv.DictWriter(f, fieldnames=['card_id', 'date', 'time', 'account', 'amount', 'possible_out_of_stock'])
     w.writeheader()
     w.writerows(all_unexplained_rows)
 print('تم حفظ العمليات غير المفسَّرة في:', out_path)
