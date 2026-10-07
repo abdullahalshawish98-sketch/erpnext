@@ -21,6 +21,23 @@ import agent_map
 
 shein_file = sys.argv[1] if len(sys.argv) > 1 else 'data/shein_all_movements.xlsx'
 out_path = sys.argv[2] if len(sys.argv) > 2 else 'data/detailed_card_review.xlsx'
+codes_file = sys.argv[3] if len(sys.argv) > 3 else '/root/.claude/uploads/07a21562-e623-57de-a7c6-ab6649a6aa2d/0b3984df-Untitled_spreadsheet.xlsx'
+
+# الرمز الحقيقي القصير لكل بطاقة (من ملف المستخدم الرئيسي "رقم التسلسل/الرمز/
+# قيمة الكرت") — مطلوب لأن حقل card_number في ERPNext على البطاقات الموزَّعة
+# (ببادئة حرف) مُستبدَل برمز سرّي داخلي (حرف+فهرس)، لا بالرمز الحقيقي.
+code_by_serial = {}
+try:
+    wb_codes = openpyxl.load_workbook(codes_file, data_only=True)
+    ws_codes = wb_codes['Sheet1']
+    for row in ws_codes.iter_rows(min_row=2, values_only=True):
+        if not row or row[0] is None:
+            continue
+        serial, code = str(row[0]).strip(), row[1]
+        if serial and code is not None:
+            code_by_serial[serial] = int(code) if isinstance(code, float) and code.is_integer() else code
+except FileNotFoundError:
+    print(f"تحذير: ملف الرموز الحقيقية غير موجود ({codes_file}) — سيُترَك عمود الرمز فارغاً", file=sys.stderr)
 
 wb_in = openpyxl.load_workbook(shein_file, data_only=True)
 ws_all = wb_in['All Movements']
@@ -326,6 +343,9 @@ def process_card(cid):
         })
 
     detail_rows.sort(key=lambda r: (str(r['date']), str(r['time'])))
+    code = code_by_serial.get(cid)
+    for r in detail_rows:
+        r['code'] = code
 
     # ملخص البطاقة
     real_balance = card_record_by_serial.get(cid, {}).get('balance')
@@ -338,7 +358,7 @@ def process_card(cid):
     orphan_invoices = sum(1 for r in detail_rows if 'يتيمة' in r['status'])
 
     summary = {
-        'card': cid, 'name': name, 'agent': agent_of(cid),
+        'card': cid, 'code': code, 'name': name, 'agent': agent_of(cid),
         'activated': activated[0][8] if activated else '',
         'erpnext_balance': real_balance,
         'shein_real_balance': shein_real_balance,
@@ -380,7 +400,7 @@ header_font = Font(bold=True, color='FFFFFF')
 ws1 = wb.active
 ws1.title = 'ملخص كل الكروت'
 ws1.sheet_view.rightToLeft = True
-headers1 = ['السيريال', 'اسم البطاقة', 'الوكيل', 'التفعيل $', 'رصيد المنظومة $', 'الرصيد الحقيقي (شي ان) $',
+headers1 = ['السيريال', 'الرمز', 'اسم البطاقة', 'الوكيل', 'التفعيل $', 'رصيد المنظومة $', 'الرصيد الحقيقي (شي ان) $',
             'الفرق $', 'مشتريات غير مفسَّرة', 'استرجاعات غير مستخدَمة', 'فواتير يتيمة']
 for ci, h in enumerate(headers1, 1):
     c = ws1.cell(1, ci, h)
@@ -388,25 +408,26 @@ for ci, h in enumerate(headers1, 1):
     c.fill = header_fill
 for ri, s in enumerate(all_summaries, 2):
     ws1.cell(ri, 1, s['card'])
-    ws1.cell(ri, 2, s['name'])
-    ws1.cell(ri, 3, s['agent'])
-    ws1.cell(ri, 4, s['activated'])
-    ws1.cell(ri, 5, s['erpnext_balance'])
-    ws1.cell(ri, 6, s['shein_real_balance'])
-    ws1.cell(ri, 7, s['diff'])
-    ws1.cell(ri, 8, s['unmatched_purchases'])
-    ws1.cell(ri, 9, s['unused_refunds'])
-    ws1.cell(ri, 10, s['orphan_invoices'])
+    ws1.cell(ri, 2, s['code'])
+    ws1.cell(ri, 3, s['name'])
+    ws1.cell(ri, 4, s['agent'])
+    ws1.cell(ri, 5, s['activated'])
+    ws1.cell(ri, 6, s['erpnext_balance'])
+    ws1.cell(ri, 7, s['shein_real_balance'])
+    ws1.cell(ri, 8, s['diff'])
+    ws1.cell(ri, 9, s['unmatched_purchases'])
+    ws1.cell(ri, 10, s['unused_refunds'])
+    ws1.cell(ri, 11, s['orphan_invoices'])
     is_clean = s['unmatched_purchases'] == 0 and s['unused_refunds'] == 0 and s['orphan_invoices'] == 0 and abs(s['diff'] or 0) <= 0.05
     fill = green if is_clean else (red if abs(s['diff'] or 0) > 0.05 else orange)
-    for ci in range(1, 11):
+    for ci in range(1, 12):
         ws1.cell(ri, ci).fill = fill
-for ci, w in zip(range(1, 11), [22, 34, 22, 12, 16, 20, 10, 14, 16, 12]):
+for ci, w in zip(range(1, 12), [22, 10, 34, 22, 12, 16, 20, 10, 14, 16, 12]):
     ws1.column_dimensions[chr(64 + ci)].width = w
 
 ws2 = wb.create_sheet('تفاصيل كل الحركات')
 ws2.sheet_view.rightToLeft = True
-headers2 = ['السيريال', 'الوكيل', '#', 'التاريخ', 'الوقت', 'الحساب', 'النوع', 'قيمة شي ان $',
+headers2 = ['السيريال', 'الرمز', 'الوكيل', '#', 'التاريخ', 'الوقت', 'الحساب', 'النوع', 'قيمة شي ان $',
             'الفاتورة المطابقة', 'قيمة الفاتورة $', 'الحالة', 'ملاحظة']
 for ci, h in enumerate(headers2, 1):
     c = ws2.cell(1, ci, h)
@@ -419,17 +440,18 @@ for r in all_detail_rows:
     if r['card'] != last_card:
         last_card = r['card']
     ws2.cell(row_i, 1, r['card'])
-    ws2.cell(row_i, 2, agent_of(r['card']))
-    ws2.cell(row_i, 3, r['seq'])
-    ws2.cell(row_i, 4, str(r['date']))
-    ws2.cell(row_i, 5, str(r['time']))
-    ws2.cell(row_i, 6, r['account'])
-    ws2.cell(row_i, 7, r['type'])
-    ws2.cell(row_i, 8, r['shein_amount'])
-    ws2.cell(row_i, 9, r['invoice'])
-    ws2.cell(row_i, 10, r['invoice_value'])
-    ws2.cell(row_i, 11, r['status'])
-    ws2.cell(row_i, 12, r['note'])
+    ws2.cell(row_i, 2, r.get('code'))
+    ws2.cell(row_i, 3, agent_of(r['card']))
+    ws2.cell(row_i, 4, r['seq'])
+    ws2.cell(row_i, 5, str(r['date']))
+    ws2.cell(row_i, 6, str(r['time']))
+    ws2.cell(row_i, 7, r['account'])
+    ws2.cell(row_i, 8, r['type'])
+    ws2.cell(row_i, 9, r['shein_amount'])
+    ws2.cell(row_i, 10, r['invoice'])
+    ws2.cell(row_i, 11, r['invoice_value'])
+    ws2.cell(row_i, 12, r['status'])
+    ws2.cell(row_i, 13, r['note'])
     fill = None
     if '❌' in r['status'] or 'يتيمة' in r['status']:
         fill = red
@@ -440,10 +462,10 @@ for r in all_detail_rows:
     elif r['status'] == 'تفعيل':
         fill = grey
     if fill:
-        for ci in range(1, 13):
+        for ci in range(1, 14):
             ws2.cell(row_i, ci).fill = fill
     row_i += 1
-for ci, w in zip(range(1, 13), [22, 18, 5, 12, 9, 26, 10, 12, 20, 12, 44, 60]):
+for ci, w in zip(range(1, 14), [22, 10, 18, 5, 12, 9, 26, 10, 12, 20, 12, 44, 60]):
     ws2.column_dimensions[chr(64 + ci)].width = w
 
 wb.save(out_path)
