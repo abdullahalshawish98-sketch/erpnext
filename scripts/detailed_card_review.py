@@ -35,12 +35,12 @@ USER_CONFIRMED_CLEAN = {
 REVIEWED_MISSING_VALUES = [
     {
         'card': '1116417806050605362', 'missing_value': 41.74,
-        'date': '2026-06-08', 'time': '01:55', 'account': 's3',
+        'date': '2026-06-08', 'time': '01:55', 'account': 'Saltic133@homail.com',
         'note': 'شراء 41.74$ بلا فاتورة مقابلة',
     },
     {
         'card': '1116417806050605362', 'missing_value': 35.75,
-        'date': '2026-06-08', 'time': '01:58', 'account': 's3',
+        'date': '2026-06-08', 'time': '01:58', 'account': 'Saltic133@homail.com',
         'note': 'شراء 51.68$ ناقص استرجاع 15.93$ (51.68-15.93=35.75) — وقت الشراء لا وقت الاسترجاع',
     },
 ]
