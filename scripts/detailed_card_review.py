@@ -449,7 +449,7 @@ for ri, s in enumerate(all_summaries, 2):
 for ci, w in zip(range(1, 13), [22, 10, 34, 22, 12, 16, 20, 10, 14, 16, 12, 14]):
     ws1.column_dimensions[chr(64 + ci)].width = w
 
-ws2 = wb.create_sheet('تفاصيل كل الحركات')
+ws2 = wb.create_sheet('الحركات غير المطابقة')
 ws2.sheet_view.rightToLeft = True
 headers2 = ['السيريال', 'الرمز', 'الوكيل', '#', 'التاريخ', 'الوقت', 'الحساب', 'النوع', 'قيمة شي ان $',
             'الفاتورة المطابقة', 'قيمة الفاتورة $', 'الحالة', 'ملاحظة']
@@ -460,7 +460,11 @@ for ci, h in enumerate(headers2, 1):
 ws2.freeze_panes = 'A2'
 row_i = 2
 last_card = None
-for r in all_detail_rows:
+# الحركات المطابقة (✅) مُستبعَدة من هذه الورقة بطلب المستخدم — الورقة تعرض
+# فقط ما يحتاج مراجعة فعلية (❌ / ⚠ / 🟠 / 🆕)، مع إبقاء صف "تفعيل" كمرجع
+# لبداية كل بطاقة.
+rows_to_show = [r for r in all_detail_rows if not r['status'].startswith('✅')]
+for r in rows_to_show:
     if r['card'] != last_card:
         last_card = r['card']
     ws2.cell(row_i, 1, r['card'])
