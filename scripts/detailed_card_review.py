@@ -55,12 +55,38 @@ def dt(date_, time_):
     return datetime.fromisoformat(f"{date_} {time_}")
 
 
-def take(erp_by_value, value):
+def inv_dt(p):
+    t = str(p.get('posting_time') or '00:00:00').split('.')[0]
+    hh, mm, ss = (t.split(':') + ['0', '0', '0'])[:3]
+    return datetime.fromisoformat(f"{p.get('posting_date')} {int(hh):02d}:{int(mm):02d}:{int(float(ss)):02d}")
+
+
+def take(erp_by_value, value, near_dt=None, max_gap_hours=None):
+    """يسحب فاتورة بقيمة `value` من المجمع. عند وجود أكثر من فاتورة بنفس القيمة
+    (قيم متكررة مثل 44.92$ لثلاث عمليات شراء مختلفة لهذه البطاقة)، يُفضَّل
+    دائماً الفاتورة الأقرب زمنياً (posting_date + posting_time) لِحركة شي ان
+    نفسها — لا أي فاتورة بنفس القيمة بلا اعتبار للزمن، وإلا قد تُخطَف فاتورة
+    حديثة التعديل (بتاريخ ترحيل مختلف كلياً) فقط لتطابق القيمة رقمياً.
+    يُستخدَم التاريخ وليس التطابق الحرفي لأن الفاتورة غالباً تُدخَل بعد دقائق
+    من عملية الشراء، وقد تتجاوز منتصف الليل (شراء 23:54 وفاتورة 00:21 في
+    اليوم التالي) فيبقى الفارق الزمني صغيراً رغم اختلاف التاريخ التقويمي.
+    max_gap_hours: أقصى فارق مقبول (بالساعات) حتى مع عدم وجود مرشَّح آخر —
+    يُستخدَم في مرحلة المطابقة المباشرة الأولى لمنع قبول فاتورة بعيدة زمنياً
+    (كشهرين) فقط لتطابق القيمة، تاركاً القيمة لمرحلة الإقران مع استرجاع التالية."""
     v = round(value, 2)
-    names = erp_by_value.get(v)
-    if names:
-        return names.pop()
-    return None
+    entries = erp_by_value.get(v)
+    if not entries:
+        return None
+    if near_dt is None:
+        return entries.pop()[0]
+    best_idx, best_gap = None, None
+    for i, (_, inv_dt) in enumerate(entries):
+        gap = abs((inv_dt - near_dt).total_seconds())
+        if best_gap is None or gap < best_gap:
+            best_idx, best_gap = i, gap
+    if max_gap_hours is not None and best_gap > max_gap_hours * 3600:
+        return None
+    return entries.pop(best_idx)[0]
 
 
 def candidates(purchases, refunds, p_idx, r_idx, lo_min, hi_min, target_min):
@@ -91,7 +117,7 @@ def process_card(cid):
                        key=lambda p: (p.get('posting_date', ''), p.get('creation', '')))
     erp_by_value = defaultdict(list)
     for p in erp_rows:
-        erp_by_value[round(p.get('total') or 0, 2)].append(p.get('name'))
+        erp_by_value[round(p.get('total') or 0, 2)].append((p.get('name'), inv_dt(p)))
     return_names = {p['name'] for p in erp_rows if p.get('is_return')}
     all_invoice_names = {p.get('name') for p in erp_rows}
 
@@ -152,18 +178,19 @@ def process_card(cid):
             used_p, used_r = set(), set()
             note_of = {}
 
-            for pi in all_p:
-                matched_name = take(erp_by_value, purchases[pi]['amount'])
-                if matched_name:
-                    used_p.add(pi)
-                    note_of[pi] = ('مطابقة مباشرة بقيمة شي ان الكاملة', purchases[pi]['amount'], matched_name)
-
-            remaining_p = [i for i in all_p if i not in used_p]
-            for _, pi, ri in candidates(purchases, refunds, remaining_p, all_r, 10, 180, 60):
+            # الإقران مع استرجاع أولاً (قبل المطابقة المباشرة بالقيمة الخام):
+            # إشارة أدق من مطابقة قيمة خام قد تتكرر صدفة بين أكثر من عملية شراء
+            # (مثل 44.92$ لثلاث عمليات مختلفة لهذه البطاقة) — فلا نترك عملية
+            # شراء لها استرجاع قريب فعلي يسرقها شراء آخر بمجرد تطابق رقمي خام.
+            # يُطالَب بالفاتورة فقط عند نجاح مطابقة القيمة الصافية فعلياً،
+            # حتى لا تُستهلَك الفاتورة/الاسترجاع على إقران زمني لا يؤكده دليل.
+            for _, pi, ri in candidates(purchases, refunds, all_p, all_r, 10, 180, 60):
                 if pi in used_p or ri in used_r:
                     continue
                 net = round(purchases[pi]['amount'] - refunds[ri]['amount'], 2)
-                matched_name = take(erp_by_value, net)
+                matched_name = take(erp_by_value, net, near_dt=dt(purchases[pi]['date'], purchases[pi]['time']))
+                if not matched_name:
+                    continue
                 used_p.add(pi)
                 used_r.add(ri)
                 gap = (dt(refunds[ri]['date'], refunds[ri]['time']) - dt(purchases[pi]['date'], purchases[pi]['time'])).total_seconds() / 60
@@ -171,10 +198,18 @@ def process_card(cid):
                 detail_rows.append({
                     'card': cid, 'seq': refunds[ri]['seq'], 'date': refunds[ri]['date'], 'time': refunds[ri]['time'], 'account': acc,
                     'type': 'استرجاع', 'shein_amount': refunds[ri]['amount'],
-                    'invoice': matched_name or '', 'invoice_value': '',
-                    'status': '✅ مطروح من فاتورة الشراء المقابلة' if matched_name else '⚠ مقرون زمنياً لكن القيمة الصافية غير موجودة كفاتورة',
+                    'invoice': matched_name, 'invoice_value': '',
+                    'status': '✅ مطروح من فاتورة الشراء المقابلة',
                     'note': f"نُسخ ضمن صافي الشراء {purchases[pi]['date']} {purchases[pi]['time']}",
                 })
+
+            remaining_p = [i for i in all_p if i not in used_p]
+            for pi in remaining_p:
+                matched_name = take(erp_by_value, purchases[pi]['amount'],
+                                     near_dt=dt(purchases[pi]['date'], purchases[pi]['time']))
+                if matched_name:
+                    used_p.add(pi)
+                    note_of[pi] = ('مطابقة مباشرة بقيمة شي ان الكاملة', purchases[pi]['amount'], matched_name)
 
             for pi, p in enumerate(purchases):
                 if pi in note_of:
@@ -197,7 +232,7 @@ def process_card(cid):
             if pi in used_p2 or ri in used_r2:
                 continue
             net = round(acc_leftover_purchases[pi]['net'] - acc_leftover_refunds[ri]['amount'], 2)
-            matched_name = take(erp_by_value, net)
+            matched_name = take(erp_by_value, net, near_dt=dt(acc_leftover_purchases[pi]['date'], acc_leftover_purchases[pi]['time']))
             if matched_name:
                 used_p2.add(pi)
                 used_r2.add(ri)
@@ -249,6 +284,24 @@ def process_card(cid):
                 gap_min = (r_dt - p_dt).total_seconds() / 60
                 if best is None or gap_min < best[0]:
                     best = (gap_min, p)
+            # قبل اعتباره "غير مستخدَم": هل أضاف المستخدم فاتورة مرتجع (is_return)
+            # بنفس القيمة المطلقة (بلا قيد تاريخ — فواتير المرتجع غالباً تُضاف
+            # لاحقاً بعد اكتشاف نفاذ المخزون، لا في نفس يوم العملية)؟
+            return_match = take(erp_by_value, -lr['amount'])
+            if return_match and return_match in return_names:
+                used_invoice_names.add(return_match)
+                inv_val = next((pp.get('total') for pp in erp_rows if pp.get('name') == return_match), '')
+                detail_rows.append({
+                    'card': cid, 'seq': lr['seq'], 'date': lr['date'], 'time': lr['time'], 'account': lr['account'],
+                    'type': 'استرجاع', 'shein_amount': lr['amount'], 'invoice': return_match, 'invoice_value': inv_val,
+                    'status': f'✅ مطابق فاتورة مرتجع {return_match}', 'note': 'نفاذ مخزون — فاتورة مرتجع مُسجَّلة بنفس القيمة',
+                })
+                continue
+            elif return_match:
+                # لم يكن مرتجعاً فعلياً — أعِده إلى المجمع كما كان
+                p_ret = next(pp for pp in erp_rows if pp.get('name') == return_match)
+                erp_by_value[round(-lr['amount'], 2)].append((return_match, inv_dt(p_ret)))
+
             if best:
                 gap_min, p = best
                 guess = 'نفس الفاتورة القريبة (نسيان طرح محتمل)' if gap_min <= 180 else '📦 نفاذ مخزون محتمل — فاتورة مرتجع منفصلة'
