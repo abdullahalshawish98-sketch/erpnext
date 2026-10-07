@@ -421,7 +421,16 @@ header_fill = PatternFill('solid', fgColor='4472C4')
 header_font = Font(bold=True, color='FFFFFF')
 
 ws1 = wb.active
-ws1.title = 'ملخص كل الكروت'
+def is_clean_summary(s):
+    return s['unmatched_purchases'] == 0 and s['unused_refunds'] == 0 and s['orphan_invoices'] == 0 and abs(s['diff'] or 0) <= 0.05
+
+
+# الكروت المطابقة تماماً (لا فرق، لا شيء معلَّق) تُستبعَد من الملف كله بطلب
+# المستخدم — لا فائدة من عرضها بعد أن تأكَّدنا من سلامتها.
+unmatched_summaries = [s for s in all_summaries if not is_clean_summary(s)]
+unmatched_card_ids = {s['card'] for s in unmatched_summaries}
+
+ws1.title = 'الكروت غير المطابقة'
 ws1.sheet_view.rightToLeft = True
 headers1 = ['السيريال', 'الرمز', 'اسم البطاقة', 'الوكيل', 'التفعيل $', 'رصيد المنظومة $', 'الرصيد الحقيقي (شي ان) $',
             'الفرق $', 'مشتريات غير مفسَّرة', 'استرجاعات غير مستخدَمة', 'فواتير يتيمة', 'قيد التصدير $']
@@ -429,7 +438,7 @@ for ci, h in enumerate(headers1, 1):
     c = ws1.cell(1, ci, h)
     c.font = header_font
     c.fill = header_fill
-for ri, s in enumerate(all_summaries, 2):
+for ri, s in enumerate(unmatched_summaries, 2):
     ws1.cell(ri, 1, s['card'])
     ws1.cell(ri, 2, s['code'])
     ws1.cell(ri, 3, s['name'])
@@ -442,14 +451,13 @@ for ri, s in enumerate(all_summaries, 2):
     ws1.cell(ri, 10, s['unused_refunds'])
     ws1.cell(ri, 11, s['orphan_invoices'])
     ws1.cell(ri, 12, s['pending_export'])
-    is_clean = s['unmatched_purchases'] == 0 and s['unused_refunds'] == 0 and s['orphan_invoices'] == 0 and abs(s['diff'] or 0) <= 0.05
-    fill = green if is_clean else (red if abs(s['diff'] or 0) > 0.05 else orange)
+    fill = red if abs(s['diff'] or 0) > 0.05 else orange
     for ci in range(1, 13):
         ws1.cell(ri, ci).fill = fill
 for ci, w in zip(range(1, 13), [22, 10, 34, 22, 12, 16, 20, 10, 14, 16, 12, 14]):
     ws1.column_dimensions[chr(64 + ci)].width = w
 
-ws2 = wb.create_sheet('الحركات غير المطابقة')
+ws2 = wb.create_sheet('تفاصيل الكروت غير المطابقة')
 ws2.sheet_view.rightToLeft = True
 headers2 = ['السيريال', 'الرمز', 'الوكيل', '#', 'التاريخ', 'الوقت', 'الحساب', 'النوع', 'قيمة شي ان $',
             'الفاتورة المطابقة', 'قيمة الفاتورة $', 'الحالة', 'ملاحظة']
@@ -460,10 +468,10 @@ for ci, h in enumerate(headers2, 1):
 ws2.freeze_panes = 'A2'
 row_i = 2
 last_card = None
-# الحركات المطابقة (✅) مُستبعَدة من هذه الورقة بطلب المستخدم — الورقة تعرض
-# فقط ما يحتاج مراجعة فعلية (❌ / ⚠ / 🟠 / 🆕)، مع إبقاء صف "تفعيل" كمرجع
-# لبداية كل بطاقة.
-rows_to_show = [r for r in all_detail_rows if not r['status'].startswith('✅')]
+# الكروت المطابقة تماماً مُستبعَدة بالكامل (سطراً وملخصاً) — أما الكروت
+# المتبقية (غير المطابقة) فتظهر فيها *كل* حركاتها (مطابقة وغير مطابقة معاً)
+# كسياق كامل لمراجعة كل سحوباتها دفعة واحدة.
+rows_to_show = [r for r in all_detail_rows if r['card'] in unmatched_card_ids]
 for r in rows_to_show:
     if r['card'] != last_card:
         last_card = r['card']
