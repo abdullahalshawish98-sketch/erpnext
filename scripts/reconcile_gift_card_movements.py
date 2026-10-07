@@ -143,6 +143,7 @@ for cid in shein_cards:
         erp_by_value[round(p.get('total') or 0, 2)].append(p.get('name'))
     return_names = {p['name'] for p in erp_rows if p.get('is_return')}
 
+    print('===', cid, '===')
     accounts = sorted({t[6] for t in shein_cards[cid] if t[7] != 'Activated'})
     all_results = []
     for acc in accounts:
@@ -202,7 +203,6 @@ for cid in shein_cards:
                 print(f"  [استرجاع غير مُستخدَم] {lr['date']} {lr['time']}  -{lr['amount']}$  (حساب {lr['account']}) | لا يوجد شراء سابق على نفس الحساب")
 
     all_results.sort(key=lambda x: (x['date'], x['time']))
-    print('===', cid, '===')
     unexplained = []
     remaining_pool_names = {n for names in erp_by_value.values() for n in names}
     for n in all_results:
