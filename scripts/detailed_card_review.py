@@ -25,7 +25,25 @@ import agent_map
 # هنا أكّده المستخدم شخصياً، فيُستبعَد من "غير مطابق" بصرف النظر عن diff.
 USER_CONFIRMED_CLEAN = {
     "1114017871787203068",  # أكّد المستخدم 2026-10-07: الفاتورة الجديدة ACC-PINV-2026-25918 صحيحة كما هي
+    "1116417806050605362",  # راجعها المستخدم يدوياً 2026-10-07 — القيم المفقودة مسجَّلة في ورقة "طلبيات بها قيم مفقودة"
 }
+
+# سجلّ تراكمي بالطلبيات التي راجعها المستخدم يدوياً ووجد أن قيمتها الحقيقية
+# غير مسجَّلة في المنظومة إطلاقاً (لا فاتورة خاطئة لتصحيحها، بل فاتورة يجب
+# إضافتها من الصفر). كل سطر هنا أدخله المستخدم مباشرة من معرفته بشي ان، وليس
+# نتيجة حساب آلي — يُعرَض في ورقة منفصلة ليراجعها ويضيف الفواتير يدوياً.
+REVIEWED_MISSING_VALUES = [
+    {
+        'card': '1116417806050605362', 'missing_value': 41.74,
+        'date': '2026-06-08', 'time': '01:55', 'account': 's3',
+        'note': 'شراء 41.74$ بلا فاتورة مقابلة',
+    },
+    {
+        'card': '1116417806050605362', 'missing_value': 35.75,
+        'date': '2026-06-08', 'time': '01:58', 'account': 's3',
+        'note': 'شراء 51.68$ ناقص استرجاع 15.93$ (51.68-15.93=35.75) — وقت الشراء لا وقت الاسترجاع',
+    },
+]
 
 shein_file = sys.argv[1] if len(sys.argv) > 1 else 'data/shein_all_movements.xlsx'
 out_path = sys.argv[2] if len(sys.argv) > 2 else 'data/detailed_card_review.xlsx'
@@ -513,6 +531,26 @@ for r in rows_to_show:
     row_i += 1
 for ci, w in zip(range(1, 14), [22, 10, 18, 5, 12, 9, 26, 10, 12, 20, 12, 44, 60]):
     ws2.column_dimensions[chr(64 + ci)].width = w
+
+ws3 = wb.create_sheet('طلبيات بها قيم مفقودة')
+ws3.sheet_view.rightToLeft = True
+headers3 = ['السيريال', 'الرمز', 'التاريخ', 'وقت الشراء', 'الحساب', 'القيمة المفقودة $', 'ملاحظة']
+for ci, h in enumerate(headers3, 1):
+    c = ws3.cell(1, ci, h)
+    c.font = header_font
+    c.fill = header_fill
+for ri, m in enumerate(REVIEWED_MISSING_VALUES, 2):
+    ws3.cell(ri, 1, m['card'])
+    ws3.cell(ri, 2, code_by_serial.get(m['card']))
+    ws3.cell(ri, 3, m['date'])
+    ws3.cell(ri, 4, m['time'])
+    ws3.cell(ri, 5, m['account'])
+    ws3.cell(ri, 6, m['missing_value'])
+    ws3.cell(ri, 7, m['note'])
+    for ci in range(1, 8):
+        ws3.cell(ri, ci).fill = orange
+for ci, w in zip(range(1, 8), [22, 10, 12, 12, 10, 16, 70]):
+    ws3.column_dimensions[chr(64 + ci)].width = w
 
 wb.save(out_path)
 print()
