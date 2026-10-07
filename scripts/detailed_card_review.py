@@ -48,6 +48,14 @@ for r in rows_all:
     cid = str(r[2])
     shein_cards.setdefault(cid, []).append(r)
 
+# آخر لحظة مُصدَّرة في ملف شي ان كله — أي فاتورة ERPNext بعد هذا التاريخ هي
+# عملية جديدة لم تُصدَّر بعد من شي ان، لا "فاتورة يتيمة" ولا خطأ فعلي. بدون
+# هذا الاستبعاد، أي بطاقة اشترى الوكيل بها اليوم (بعد توليد ملف شي ان) تظهر
+# زوراً "بها فرق/فواتير يتيمة" لمجرد أن الملف لا يغطي اليوم، لا لوجود خطأ.
+export_cutoff = max(
+    datetime.fromisoformat(f"{r[4]} {r[5]}") for r in rows_all if r and r[4] is not None
+)
+
 with open('data/Gift_Card.json', encoding='utf-8') as f:
     cards = json.load(f)
 with open('data/Purchase_Invoice.json', encoding='utf-8') as f:
@@ -331,15 +339,24 @@ def process_card(cid):
                 'status': '⚠ استرجاع غير مُستخدَم', 'note': note,
             })
 
-    # فواتير ERPNext لهذه البطاقة لم تُستخدَم في أي مطابقة إطلاقاً
+    # فواتير ERPNext لهذه البطاقة لم تُستخدَم في أي مطابقة إطلاقاً. فاتورة
+    # بتاريخ بعد آخر حركة مُصدَّرة من شي ان (export_cutoff) ليست "يتيمة" —
+    # هي عملية جديدة لم يُصدِّرها شي ان في هذا الملف بعد، فلا دليل على وجود
+    # خطأ فيها، ولا تُحسَب ضمن الفواتير اليتيمة الحقيقية.
     unused_invoices = all_invoice_names - used_invoice_names
+    post_cutoff_total = 0.0
     for inv_name in unused_invoices:
         inv = next(p for p in erp_rows if p.get('name') == inv_name)
+        if inv_dt(inv) > export_cutoff:
+            post_cutoff_total += inv.get('total') or 0
+            status = '🆕 بعد آخر تصدير من شي ان — غير قابلة للتحقق بعد'
+        else:
+            status = '🟠 فاتورة يتيمة — لا تقابلها أي حركة شي ان مطابقة'
         detail_rows.append({
             'card': cid, 'seq': '', 'date': inv.get('posting_date'), 'time': str(inv.get('posting_time'))[:8],
             'account': '', 'type': 'فاتورة مرتجع' if inv.get('is_return') else 'فاتورة شراء',
             'shein_amount': '', 'invoice': inv_name, 'invoice_value': inv.get('total'),
-            'status': '🟠 فاتورة يتيمة — لا تقابلها أي حركة شي ان مطابقة', 'note': '',
+            'status': status, 'note': '',
         })
 
     detail_rows.sort(key=lambda r: (str(r['date']), str(r['time'])))
@@ -355,17 +372,22 @@ def process_card(cid):
     shein_real_balance = round((activated[0][8] if activated else 0) - purchases_sum + refunds_sum, 2)
     unmatched_purchases = sum(1 for r in detail_rows if r['type'] == 'شراء' and '❌' in r['status'])
     unused_refunds = sum(1 for r in detail_rows if r['status'] == '⚠ استرجاع غير مُستخدَم')
-    orphan_invoices = sum(1 for r in detail_rows if 'يتيمة' in r['status'])
+    orphan_invoices = sum(1 for r in detail_rows if '🟠' in r['status'])
+    # رصيد المنظومة الحالي معدَّل: نُعيد إليه ما صُرف بعد آخر تصدير من شي ان،
+    # لمقارنة عادلة مع رصيد شي ان المحسوب من حركات حتى نفس اللحظة فقط —
+    # بدونه تبدو أي بطاقة اشترى الوكيل بها اليوم "بها فرق" زوراً.
+    erpnext_balance_at_cutoff = round((real_balance or 0) + post_cutoff_total, 2) if real_balance is not None else None
 
     summary = {
         'card': cid, 'code': code, 'name': name, 'agent': agent_of(cid),
         'activated': activated[0][8] if activated else '',
         'erpnext_balance': real_balance,
         'shein_real_balance': shein_real_balance,
-        'diff': round((real_balance or 0) - shein_real_balance, 2) if real_balance is not None else '',
+        'diff': round((erpnext_balance_at_cutoff or 0) - shein_real_balance, 2) if erpnext_balance_at_cutoff is not None else '',
         'unmatched_purchases': unmatched_purchases,
         'unused_refunds': unused_refunds,
         'orphan_invoices': orphan_invoices,
+        'pending_export': round(post_cutoff_total, 2),
     }
     return detail_rows, summary
 
@@ -380,8 +402,9 @@ for cid in shein_cards:
     all_detail_rows.extend(detail_rows)
     all_summaries.append(summary)
     flag = '  <<< يحتاج مراجعة' if (summary['unmatched_purchases'] or summary['unused_refunds'] or summary['orphan_invoices'] or abs(summary['diff'] or 0) > 0.05) else ''
+    pending = f"  (قيد التصدير: {summary['pending_export']}$)" if summary['pending_export'] else ''
     print(f"{cid}  ({summary['agent']})  erp={summary['erpnext_balance']}  shein={summary['shein_real_balance']}  diff={summary['diff']}  "
-          f"غير مطابق={summary['unmatched_purchases']}  استرجاع غير مستخدم={summary['unused_refunds']}  فواتير يتيمة={summary['orphan_invoices']}{flag}")
+          f"غير مطابق={summary['unmatched_purchases']}  استرجاع غير مستخدم={summary['unused_refunds']}  فواتير يتيمة={summary['orphan_invoices']}{pending}{flag}")
 
 all_summaries.sort(key=lambda s: abs(s['diff'] if isinstance(s['diff'], (int, float)) else 0), reverse=True)
 
@@ -401,7 +424,7 @@ ws1 = wb.active
 ws1.title = 'ملخص كل الكروت'
 ws1.sheet_view.rightToLeft = True
 headers1 = ['السيريال', 'الرمز', 'اسم البطاقة', 'الوكيل', 'التفعيل $', 'رصيد المنظومة $', 'الرصيد الحقيقي (شي ان) $',
-            'الفرق $', 'مشتريات غير مفسَّرة', 'استرجاعات غير مستخدَمة', 'فواتير يتيمة']
+            'الفرق $', 'مشتريات غير مفسَّرة', 'استرجاعات غير مستخدَمة', 'فواتير يتيمة', 'قيد التصدير $']
 for ci, h in enumerate(headers1, 1):
     c = ws1.cell(1, ci, h)
     c.font = header_font
@@ -418,11 +441,12 @@ for ri, s in enumerate(all_summaries, 2):
     ws1.cell(ri, 9, s['unmatched_purchases'])
     ws1.cell(ri, 10, s['unused_refunds'])
     ws1.cell(ri, 11, s['orphan_invoices'])
+    ws1.cell(ri, 12, s['pending_export'])
     is_clean = s['unmatched_purchases'] == 0 and s['unused_refunds'] == 0 and s['orphan_invoices'] == 0 and abs(s['diff'] or 0) <= 0.05
     fill = green if is_clean else (red if abs(s['diff'] or 0) > 0.05 else orange)
-    for ci in range(1, 12):
+    for ci in range(1, 13):
         ws1.cell(ri, ci).fill = fill
-for ci, w in zip(range(1, 12), [22, 10, 34, 22, 12, 16, 20, 10, 14, 16, 12]):
+for ci, w in zip(range(1, 13), [22, 10, 34, 22, 12, 16, 20, 10, 14, 16, 12, 14]):
     ws1.column_dimensions[chr(64 + ci)].width = w
 
 ws2 = wb.create_sheet('تفاصيل كل الحركات')
@@ -453,13 +477,13 @@ for r in all_detail_rows:
     ws2.cell(row_i, 12, r['status'])
     ws2.cell(row_i, 13, r['note'])
     fill = None
-    if '❌' in r['status'] or 'يتيمة' in r['status']:
+    if '❌' in r['status'] or '🟠' in r['status']:
         fill = red
     elif '⚠' in r['status']:
         fill = orange
     elif '✅' in r['status']:
         fill = green
-    elif r['status'] == 'تفعيل':
+    elif r['status'] == 'تفعيل' or '🆕' in r['status']:
         fill = grey
     if fill:
         for ci in range(1, 14):
