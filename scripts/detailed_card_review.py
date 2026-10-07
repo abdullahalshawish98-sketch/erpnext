@@ -19,6 +19,14 @@ from openpyxl.styles import Font, PatternFill, Alignment
 sys.path.insert(0, '.')
 import agent_map
 
+# بطاقات أكّد المستخدم مباشرةً أنها سليمة رغم أن الحساب الآلي يُظهر فرقاً —
+# عادةً لأن لديه معرفة مباشرة من شي ان تتجاوز ما يَستنتجه الفارق الزمني وحده
+# (مثل قيمة فاتورة مرتجع أو تصحيح لا يطابق حسابنا الافتراضي للصافي). كل سيريال
+# هنا أكّده المستخدم شخصياً، فيُستبعَد من "غير مطابق" بصرف النظر عن diff.
+USER_CONFIRMED_CLEAN = {
+    "1114017871787203068",  # أكّد المستخدم 2026-10-07: الفاتورة الجديدة ACC-PINV-2026-25918 صحيحة كما هي
+}
+
 shein_file = sys.argv[1] if len(sys.argv) > 1 else 'data/shein_all_movements.xlsx'
 out_path = sys.argv[2] if len(sys.argv) > 2 else 'data/detailed_card_review.xlsx'
 codes_file = sys.argv[3] if len(sys.argv) > 3 else '/root/.claude/uploads/07a21562-e623-57de-a7c6-ab6649a6aa2d/0b3984df-Untitled_spreadsheet.xlsx'
@@ -422,6 +430,8 @@ header_font = Font(bold=True, color='FFFFFF')
 
 ws1 = wb.active
 def is_clean_summary(s):
+    if s['card'] in USER_CONFIRMED_CLEAN:
+        return True
     return s['unmatched_purchases'] == 0 and s['unused_refunds'] == 0 and s['orphan_invoices'] == 0 and abs(s['diff'] or 0) <= 0.05
 
 
