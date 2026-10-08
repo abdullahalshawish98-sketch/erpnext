@@ -268,6 +268,20 @@ def process_card(cid):
                 if pi in used_p or ri in used_r:
                     continue
                 net = round(purchases[pi]['amount'] - refunds[ri]['amount'], 2)
+                if abs(net) < 0.05:
+                    # إلغاء جزئي (صافي صفر) داخل جلسة أكبر لا تُلغى كاملة —
+                    # نفس منطق "جلسة أُلغيت بالكامل" أعلاه لكن على زوج واحد
+                    # فقط، فلا حاجة لفاتورة إطلاقاً (قطعة توصيل أُضيفت وأُلغيت).
+                    used_p.add(pi)
+                    used_r.add(ri)
+                    gap = (dt(refunds[ri]['date'], refunds[ri]['time']) - dt(purchases[pi]['date'], purchases[pi]['time'])).total_seconds() / 60
+                    note_of[pi] = (f"أُلغيت بالكامل باسترجاع +{refunds[ri]['amount']}$ بعد {gap:.0f} دقيقة (صافي صفر)", 0.0, None)
+                    detail_rows.append({
+                        'card': cid, 'seq': refunds[ri]['seq'], 'date': refunds[ri]['date'], 'time': refunds[ri]['time'], 'account': acc,
+                        'type': 'استرجاع', 'shein_amount': refunds[ri]['amount'], 'invoice': '', 'invoice_value': '',
+                        'status': '✅ إلغاء كامل (صافي صفر)', 'note': f"يقابل شراء {purchases[pi]['date']} {purchases[pi]['time']}",
+                    })
+                    continue
                 matched_name = take(erp_by_value, net, near_dt=dt(purchases[pi]['date'], purchases[pi]['time']))
                 if not matched_name:
                     continue
@@ -343,6 +357,9 @@ def process_card(cid):
                 used_invoice_names.add(match)
                 inv_val = next((pp.get('total') for pp in erp_rows if pp.get('name') == match), '')
                 status = f'✅ مطابق {match}'
+            elif abs(net) < 0.05:
+                status = '✅ إلغاء كامل (صافي صفر)'
+                inv_val = ''
             else:
                 status = '❌ غير مفسَّر — لا توجد فاتورة بهذه القيمة الصافية'
                 inv_val = ''
