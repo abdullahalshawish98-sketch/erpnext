@@ -129,9 +129,20 @@ def take(erp_by_value, value, near_dt=None, max_gap_hours=None):
     اليوم التالي) فيبقى الفارق الزمني صغيراً رغم اختلاف التاريخ التقويمي.
     max_gap_hours: أقصى فارق مقبول (بالساعات) حتى مع عدم وجود مرشَّح آخر —
     يُستخدَم في مرحلة المطابقة المباشرة الأولى لمنع قبول فاتورة بعيدة زمنياً
-    (كشهرين) فقط لتطابق القيمة، تاركاً القيمة لمرحلة الإقران مع استرجاع التالية."""
+    (كشهرين) فقط لتطابق القيمة، تاركاً القيمة لمرحلة الإقران مع استرجاع التالية.
+    عند عدم وجود مطابقة حرفية، يُسمَح بفارق سنتين (0.02$) كحد أقصى — فروق
+    تقريب حقيقية (مثل 81.07$ في شي ان مقابل 81.09$ في المنظومة) ظهرت فعلاً
+    مرتين على الأقل، وبفضل شرط near_dt (الأقرب زمنياً) لا تُقبَل فاتورة بعيدة
+    زمنياً فقط لأنها قريبة رقمياً."""
     v = round(value, 2)
-    entries = erp_by_value.get(v)
+    if v in erp_by_value:
+        key = v
+    else:
+        close_keys = [k for k in erp_by_value if abs(k - v) <= 0.02 + 1e-9]
+        key = min(close_keys, key=lambda k: abs(k - v)) if close_keys else None
+    if key is None:
+        return None
+    entries = erp_by_value.get(key)
     if not entries:
         return None
     if near_dt is None:
