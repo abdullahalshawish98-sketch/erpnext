@@ -94,6 +94,46 @@ REVIEWED_MISSING_VALUES = [
     },
 ]
 
+# كروت "مربوطة": آلية شي ان تسمح بالشراء من بطاقة واحدة بـ5 حسابات فقط؛ عند
+# الشراء بحساب سادس يُطلَب ربط البطاقة بذلك الحساب. المستخدم لا يملك دخولاً
+# لهذا الحساب السادس، فلا يمكنه فتح تقرير شي ان الكامل للبطاقة ولا تصدير
+# حركاتها — فتُستبعَد هذه الكروت من "غير المطابقة" (لا دليل كافٍ للحكم عليها)
+# وتُعرَض في ورقة منفصلة فقط لتسجيل الحساب السادس المطلوب لمن يملك صلاحية فتحه.
+# الحساب السادس يُستخرَج من حقل Shopping Account في آخر فاتورة شراء لكل بطاقة.
+LINKED_CARDS = [
+    {
+        'card': '1116017910192605944',
+        'shopping_account': 'LarryHoldenBXm36511@outlook.com - شي ان',
+        'note': 'مربوط - لا يمكن الوصول لتقرير شي ان إلا بفتح هذا الحساب',
+    },
+    {
+        'card': '1118017907661203049',
+        'shopping_account': 'LauraBlackF22871@hotmail.com - شي ان',
+        'note': 'مربوط - لا يمكن الوصول لتقرير شي ان إلا بفتح هذا الحساب (آخر فحص آلي من سكرين شوت جزئي أظهر فرق 4.88$، 4.00$ منها فاتورة ACC-PINV-2026-24843 بقيمة مختلفة عن الشراء المقابل تماماً بالتوقيت — بانتظار التأكيد من الحساب السادس)',
+    },
+    {
+        'card': '1116217899822802855',
+        'shopping_account': 'LarryHoldenBXm36511@outlook.com - شي ان',
+        'note': 'مربوط (نفس حساب الكرت 1116017910192605944) - تم تجاوزه سابقاً',
+    },
+    {
+        'card': '1113117819597404308',
+        'shopping_account': 'ledgercostavhml@outlook.com - شي ان',
+        'note': 'مربوط - لا يمكن الوصول لتقرير شي ان إلا بفتح هذا الحساب',
+    },
+    {
+        'card': '1117117809261204915',
+        'shopping_account': 'adlerlindseyjaos@outlook.com - شي ان',
+        'note': 'مربوط - لا يمكن الوصول لتقرير شي ان إلا بفتح هذا الحساب',
+    },
+    {
+        'card': '1118417837961608167',
+        'shopping_account': 'HyacinthaCarreon340@hotmail.com - شي ان',
+        'note': 'مربوط - لا يمكن الوصول لتقرير شي ان إلا بفتح هذا الحساب',
+    },
+]
+LINKED_CARD_SERIALS = {c['card'] for c in LINKED_CARDS}
+
 shein_file = sys.argv[1] if len(sys.argv) > 1 else 'data/shein_all_movements.xlsx'
 out_path = sys.argv[2] if len(sys.argv) > 2 else 'data/detailed_card_review.xlsx'
 codes_file = sys.argv[3] if len(sys.argv) > 3 else '/root/.claude/uploads/07a21562-e623-57de-a7c6-ab6649a6aa2d/0b3984df-Untitled_spreadsheet.xlsx'
@@ -574,7 +614,7 @@ header_font = Font(bold=True, color='FFFFFF')
 
 ws1 = wb.active
 def is_clean_summary(s):
-    if s['card'] in USER_CONFIRMED_CLEAN:
+    if s['card'] in USER_CONFIRMED_CLEAN or s['card'] in LINKED_CARD_SERIALS:
         return True
     return s['unmatched_purchases'] == 0 and s['unused_refunds'] == 0 and s['orphan_invoices'] == 0 and abs(s['diff'] or 0) <= 0.05
 
@@ -677,6 +717,23 @@ for ri, m in enumerate(REVIEWED_MISSING_VALUES, 2):
         ws3.cell(ri, ci).fill = orange
 for ci, w in zip(range(1, 8), [22, 10, 12, 12, 10, 16, 70]):
     ws3.column_dimensions[chr(64 + ci)].width = w
+
+ws4 = wb.create_sheet('الكروت المربوطة')
+ws4.sheet_view.rightToLeft = True
+headers4 = ['السيريال', 'الرمز', 'الحساب السادس (Shopping Account)', 'ملاحظة']
+for ci, h in enumerate(headers4, 1):
+    c = ws4.cell(1, ci, h)
+    c.font = header_font
+    c.fill = header_fill
+for ri, lc in enumerate(LINKED_CARDS, 2):
+    ws4.cell(ri, 1, lc['card'])
+    ws4.cell(ri, 2, code_by_serial.get(lc['card']))
+    ws4.cell(ri, 3, lc['shopping_account'])
+    ws4.cell(ri, 4, lc['note'])
+    for ci in range(1, 5):
+        ws4.cell(ri, ci).fill = orange
+for ci, w in zip(range(1, 5), [22, 10, 40, 80]):
+    ws4.column_dimensions[chr(64 + ci)].width = w
 
 wb.save(out_path)
 print()
