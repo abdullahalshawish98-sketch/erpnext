@@ -542,9 +542,12 @@ LINKED_CARD_SERIALS = {c['card'] for c in LINKED_CARDS}
 
 
 def is_clean_summary(s):
-    if s['card'] in USER_CONFIRMED_CLEAN or s['card'] in LINKED_CARD_SERIALS:
+    # بطلب المستخدم: لا نتجاهل أي فرق مهما صغر — الكرت الوحيد المُستبعَد من هذه
+    # الورقة هو كرت مربوط بحساب سادس لا توجد له بيانات أصلاً (LINKED_CARD_SERIALS).
+    # USER_CONFIRMED_CLEAN لا يُستخدَم هنا للاستبعاد؛ كل الكروت التي أُرسلت تظهر.
+    if s['card'] in LINKED_CARD_SERIALS:
         return True
-    return s['unmatched_purchases'] == 0 and s['unused_refunds'] == 0 and s['orphan_invoices'] == 0 and abs(s['diff'] or 0) <= 0.05
+    return s['unmatched_purchases'] == 0 and s['unused_refunds'] == 0 and s['orphan_invoices'] == 0 and abs(s['diff'] or 0) == 0
 
 
 unmatched_summaries = [s for s in all_summaries if not is_clean_summary(s)]
